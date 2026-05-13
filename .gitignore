@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# HuggingFace
+.cache/
+huggingface/
+
+# Datasets
+datasets/activation_buffer/*.pt
+datasets/**/*.pt
+
+# Model checkpoints
+checkpoints/
+*.ckpt
+*.bin
+*.safetensors
+
+# Torch
+*.pth
+
+# Logs
+logs/
+wandb/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
