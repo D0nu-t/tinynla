@@ -53,7 +53,19 @@ class ActivationExtractor:
         target_layer.register_forward_hook(
             self.hook_fn
         )
+    def extract(
+        self,
+        text,
+        mode="pooled",
+        pooling="mean"
+    ):
+        if mode == "sequence":
+            return self.extract_sequence(text)
 
+        return self.extract_pooled(
+    text,
+    pooling=pooling
+)
     def hook_fn(
         self,
         module,

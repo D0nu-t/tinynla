@@ -130,7 +130,7 @@ def main():
             # Extract Activation
             # ---------------------------------------
 
-            activation = extractor.extract_pooled(text)
+            activation = extractor.extract(text)
             # ---------------------------------------
             # Generate Semantic Description
             # ---------------------------------------
