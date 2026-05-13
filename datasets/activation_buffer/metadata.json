@@ -1,0 +1,9 @@
+{
+  "model": "gpt2",
+  "layer_idx": 5,
+  "normalize": true,
+  "max_length": 64,
+  "num_samples": 20000,
+  "skipped_samples": 0,
+  "hidden_dim": 768
+}

@@ -1,317 +1,165 @@
-import os
+"""
+training/layer_sweep.py
+
+Layer Sweep Orchestrator.
+
+Runs the full TinyNLA pipeline (buffer -> train -> eval_patch -> eval_functional)
+for each layer in cfg["activation"]["layer_indices"].
+
+Each layer gets:
+  - isolated dataset directory
+  - isolated checkpoint directory
+  - a dedicated YAML config written to disk
+  - per-layer metrics stored in summary.json
+
+Config is passed to subprocesses via the TINYNLA_CONFIG env var,
+which all training scripts read via nla.utils.load_config().
+
+This replaces the previous pattern of modifying base.yaml in-place,
+which caused races and made experiments non-reproducible.
+
+Usage:
+    python -m training.layer_sweep
+    .\run_all.ps1 -Sweep
+"""
+
 import json
-import yaml
+import os
 import shutil
 import subprocess
+import sys
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 
-from datetime import datetime
+import yaml
+
+from nla.utils import load_config
 
 
-"""
-Layer Sweep Orchestrator
-========================
-
-Purpose
--------
-Runs the entire TinyNLA pipeline across multiple
-transformer layers automatically.
-
-For each layer:
-    1. Build activation buffer
-    2. Train activation reconstructor
-    3. Evaluate reconstruction
-    4. Evaluate functional preservation
-    5. Save metrics + artifacts
-
-This enables:
-    - layer-wise representation analysis
-    - recoverability studies
-    - semantic depth analysis
-    - causal preservation comparison
-
-Recommended Usage
------------------
-
-python -m training.layer_sweep
-"""
-
-
-# =========================================================
-# Utility Functions
-# =========================================================
-
-def load_base_config():
-
-    with open("configs/base.yaml", "r") as f:
-        return yaml.safe_load(f)
-
-
-def save_config(cfg, path):
-
+def save_config(cfg: dict, path: Path) -> None:
     with open(path, "w") as f:
         yaml.dump(cfg, f, sort_keys=False)
 
 
-def run_command(cmd):
-
-    result = subprocess.run(
-        cmd,
-        shell=True
-    )
-
+def run_step(cmd: str, env: dict) -> None:
+    result = subprocess.run(cmd, shell=True, env=env)
     if result.returncode != 0:
+        raise RuntimeError(f"Step failed: {cmd}")
 
-        raise RuntimeError(
-            f"Command failed:\n{cmd}"
-        )
-
-
-def ensure_dir(path):
-
-    Path(path).mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
-
-# =========================================================
-# Main Sweep
-# =========================================================
 
 def main():
+    base_cfg = load_config()
+    layers = base_cfg["activation"]["layer_indices"]
 
-    # -----------------------------------------------------
-    # Sweep Configuration
-    # -----------------------------------------------------
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    sweep_root = Path(base_cfg["paths"]["experiment_dir"]) / f"layer_sweep_{timestamp}"
+    sweep_root.mkdir(parents=True, exist_ok=True)
 
-    layers = [1, 3, 5, 7, 9, 11]
+    print(f"\n{'='*60}")
+    print(f"LAYER SWEEP — {len(layers)} layers")
+    print(f"Experiment root: {sweep_root}")
+    print(f"{'='*60}")
 
-    base_cfg = load_base_config()
-
-    timestamp = datetime.now().strftime(
-        "%Y%m%d_%H%M%S"
-    )
-
-    sweep_root = Path(
-        f"experiments/layer_sweep_{timestamp}"
-    )
-
-    ensure_dir(sweep_root)
-
-    summary_metrics = []
-
-    # -----------------------------------------------------
-    # Layer Loop
-    # -----------------------------------------------------
+    summary: list = []
 
     for layer_idx in layers:
+        print(f"\n{'='*60}")
+        print(f"LAYER {layer_idx}")
+        print(f"{'='*60}")
 
-        print("\n")
-        print("=" * 60)
-        print(f"RUNNING LAYER {layer_idx}")
-        print("=" * 60)
-
-        # -------------------------------------------------
-        # Experiment Paths
-        # -------------------------------------------------
-
+        # ------------------------------------------------------------------
+        # Per-layer experiment paths
+        # ------------------------------------------------------------------
         exp_dir = sweep_root / f"layer_{layer_idx}"
+        dataset_dir = exp_dir / "dataset"
+        checkpoint_dir = exp_dir / "checkpoints"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-        ensure_dir(exp_dir)
-
-        dataset_dir = (
-            exp_dir / "dataset"
-        )
-
-        checkpoint_dir = (
-            exp_dir / "checkpoints"
-        )
-
-        ensure_dir(dataset_dir)
-        ensure_dir(checkpoint_dir)
-
-        # -------------------------------------------------
-        # Config Construction
-        # -------------------------------------------------
-
+        # ------------------------------------------------------------------
+        # Build layer-specific config
+        # ------------------------------------------------------------------
         cfg = deepcopy(base_cfg)
+        cfg["activation"]["layer_idx"] = layer_idx
+        cfg["dataset"]["output_dir"] = str(dataset_dir)
+        cfg["training"]["save_dir"] = str(checkpoint_dir)
+        cfg["tracking"]["run_name"] = f"gpt2_layer_{layer_idx}"
 
-        cfg["activation"]["layer_idx"] = (
-            layer_idx
-        )
+        cfg_path = exp_dir / "config.yaml"
+        save_config(cfg, cfg_path)
 
-        cfg["dataset"]["output_dir"] = str(
-            dataset_dir
-        )
+        # Pass config path to all subprocesses via env var
+        env = {**os.environ, "TINYNLA_CONFIG": str(cfg_path)}
 
-        cfg["training"]["save_dir"] = str(
-            checkpoint_dir
-        )
+        # ------------------------------------------------------------------
+        # Pipeline stages
+        # ------------------------------------------------------------------
+        steps = [
+            ("build_buffer",    "python -m training.build_buffer"),
+            ("train_ar",        "python -m training.train_ar"),
+            ("eval_patch",      "python -m training.eval_patch"),
+            ("eval_functional", "python -m training.eval_functional"),
+        ]
 
-        cfg["tracking"]["run_name"] = (
-            f"gpt2_layer_{layer_idx}"
-        )
+        failed = False
+        for step_name, cmd in steps:
+            print(f"\n  [{step_name}]")
+            try:
+                run_step(cmd, env)
+            except RuntimeError as e:
+                print(f"  [ERROR] {e}")
+                failed = True
+                break
 
-        # Temporary config for this layer
-        temp_cfg_path = (
-            exp_dir / "config.yaml"
-        )
+        if failed:
+            print(f"  Layer {layer_idx} failed; skipping to next.")
+            continue
 
-        save_config(
-            cfg,
-            temp_cfg_path
-        )
+        # ------------------------------------------------------------------
+        # Collect metrics
+        # ------------------------------------------------------------------
+        metrics_path = checkpoint_dir / "metrics.json"
+        interp_path = checkpoint_dir / "interpolation.json"
 
-        # -------------------------------------------------
-        # Environment Variable Override
-        # -------------------------------------------------
-
-        os.environ["TINYNLA_CONFIG"] = str(
-            temp_cfg_path
-        )
-
-        # -------------------------------------------------
-        # Stage 1
-        # -------------------------------------------------
-
-        print("\n[1/4] Building activation buffer")
-
-        run_command(
-            "python -m training.build_buffer"
-        )
-
-        # -------------------------------------------------
-        # Stage 2
-        # -------------------------------------------------
-
-        print("\n[2/4] Training AR")
-
-        run_command(
-            "python -m training.train_ar"
-        )
-
-        # -------------------------------------------------
-        # Stage 3
-        # -------------------------------------------------
-
-        print("\n[3/4] Evaluating reconstruction")
-
-        run_command(
-            "python -m training.eval_patch"
-        )
-
-        # -------------------------------------------------
-        # Stage 4
-        # -------------------------------------------------
-
-        print("\n[4/4] Functional evaluation")
-
-        run_command(
-            "python -m training.eval_functional"
-        )
-
-        # -------------------------------------------------
-        # Collect Metrics
-        # -------------------------------------------------
-
-        metrics_path = (
-            checkpoint_dir / "metrics.json"
-        )
+        layer_summary: dict = {"layer": layer_idx}
 
         if metrics_path.exists():
+            with open(metrics_path) as f:
+                layer_summary["metrics"] = json.load(f)
 
-            with open(metrics_path, "r") as f:
+        if interp_path.exists():
+            with open(interp_path) as f:
+                layer_summary["interpolation"] = json.load(f)
 
-                metrics = json.load(f)
+        summary.append(layer_summary)
 
-            metrics["layer"] = layer_idx
+        print(f"\n  [OK] Layer {layer_idx} complete.")
 
-            summary_metrics.append(metrics)
-
-        # -------------------------------------------------
-        # Snapshot Current Outputs
-        # -------------------------------------------------
-
-        # Save current buffer
-        src_buffer = (
-            Path(
-                cfg["dataset"]["output_dir"]
-            ) / "buffer.pt"
-        )
-
-        dst_buffer = (
-            exp_dir / "buffer.pt"
-        )
-
-        if src_buffer.exists():
-
-            shutil.copy2(
-                src_buffer,
-                dst_buffer
-            )
-
-        # Save best model
-        src_model = (
-            Path(
-                cfg["training"]["save_dir"]
-            ) / "best_model.pt"
-        )
-
-        dst_model = (
-            exp_dir / "best_model.pt"
-        )
-
-        if src_model.exists():
-
-            shutil.copy2(
-                src_model,
-                dst_model
-            )
-
-        print("\n[OK] Layer completed")
-
-    # =====================================================
-    # Save Global Summary
-    # =====================================================
-
-    summary_path = (
-        sweep_root / "summary.json"
-    )
-
+    # ------------------------------------------------------------------
+    # Save sweep summary
+    # ------------------------------------------------------------------
+    summary_path = sweep_root / "summary.json"
     with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
 
-        json.dump(
-            summary_metrics,
-            f,
-            indent=2
-        )
+    # ------------------------------------------------------------------
+    # Print comparison table
+    # ------------------------------------------------------------------
+    print(f"\n{'='*60}")
+    print("LAYER SWEEP SUMMARY")
+    print(f"{'='*60}")
+    print(f"\n{'Layer':>6}  {'KL (recon)':>12}  {'Top-k':>8}  {'PPL shift':>10}")
+    print("-" * 44)
+    for entry in summary:
+        m = entry.get("metrics", {})
+        kl  = m.get("reconstructed/kl_divergence_mean", float("nan"))
+        ovr = m.get("reconstructed/topk_overlap_mean", float("nan"))
+        ppl = m.get("reconstructed/perplexity_shift_mean", float("nan"))
+        print(f"{entry['layer']:>6}  {kl:>12.4f}  {ovr:>8.4f}  {ppl:>10.4f}")
 
-    # =====================================================
-    # Final Output
-    # =====================================================
-
-    print("\n")
-    print("=" * 60)
-    print("LAYER SWEEP COMPLETE")
-    print("=" * 60)
-
-    print("\nArtifacts saved to:\n")
-
-    print(sweep_root)
-
-    print("\nSummary metrics:")
-
-    for item in summary_metrics:
-
-        print(
-            f"Layer {item['layer']} | "
-            f"cosine={item.get('cosine', 'N/A')} | "
-            f"kl={item.get('kl_divergence', 'N/A')}"
-        )
-
-    print("\n[OK] Sweep completed.")
+    print(f"\nArtifacts: {sweep_root}")
+    print("[OK] Sweep complete.")
 
 
 if __name__ == "__main__":

@@ -1,216 +1,119 @@
-import json
-import yaml
-import torch
+"""
+training/build_buffer.py
 
+Stage 0: Build the activation buffer.
+
+Reads config from TINYNLA_CONFIG env var (set by layer_sweep.py)
+or falls back to configs/base.yaml.
+
+Output per run:
+    <output_dir>/buffer.pt       — list of {id, text, description, activation}
+    <output_dir>/metadata.json   — config snapshot + dataset statistics
+"""
+
+import json
+import sys
 from pathlib import Path
-from tqdm import tqdm
-from dotenv import load_dotenv
+
+import torch
 from datasets import load_dataset
+from dotenv import load_dotenv
+from tqdm import tqdm
 
 from nla.activations import ActivationExtractor
 from nla.dataset import save_dataset
 from nla.labeler import SemanticLabeler
+from nla.utils import load_config, resolve_device, set_seed
+
 load_dotenv()
 
 
-def main():
+def build_buffer(cfg: dict) -> None:
+    device = resolve_device(cfg)
+    set_seed(cfg["experiment"]["seed"])
 
-    cfg = yaml.safe_load(
-        open("configs/base.yaml")
-    )
-
-    # ---------------------------------------
-    # Device Resolution
-    # ---------------------------------------
-
-    if cfg["device"] == "auto":
-
-        device = (
-            "cuda"
-            if torch.cuda.is_available()
-            else "cpu"
-        )
-
-    else:
-        device = cfg["device"]
-
-    print(f"\n[INFO] Using device: {device}")
-
+    print(f"\n[INFO] Device: {device}")
     if device == "cuda":
+        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
 
-        print(
-            f"[INFO] GPU: "
-            f"{torch.cuda.get_device_name(0)}"
-        )
-
-    # ---------------------------------------
-    # Paths
-    # ---------------------------------------
-
-    output_dir = Path(
-        cfg["dataset"]["output_dir"]
-    )
-
-    output_dir.mkdir(
-        parents=True,
-        exist_ok=True
-    )
-
+    output_dir = Path(cfg["dataset"]["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / "buffer.pt"
-
     metadata_path = output_dir / "metadata.json"
 
-    # ---------------------------------------
-    # Activation Extractor
-    # ---------------------------------------
-
+    # ------------------------------------------------------------------
+    # Extractor + Labeler
+    # ------------------------------------------------------------------
     extractor = ActivationExtractor(
         model_name=cfg["model"]["target_name"],
         layer_idx=cfg["activation"]["layer_idx"],
         device=device,
         max_length=cfg["activation"]["max_length"],
-        normalize=cfg["activation"]["normalize"]
+        normalize=cfg["activation"]["normalize"],
     )
-
-    # ---------------------------------------
-    # Semantic Labeler
-    # ---------------------------------------
-
     labeler = SemanticLabeler()
 
-    # ---------------------------------------
+    # ------------------------------------------------------------------
     # Dataset
-    # ---------------------------------------
-
-    dataset = load_dataset(
-        "roneneldan/TinyStories",
-        split="train"
-    )
-
-    dataset = dataset.select(
-        range(cfg["dataset"]["num_samples"])
-    )
-
-    print(
-        f"\n[INFO] Building activation buffer "
-        f"with {len(dataset)} samples"
-    )
+    # ------------------------------------------------------------------
+    dataset = load_dataset(cfg["dataset"]["source"], split="train")
+    n = cfg["dataset"]["num_samples"]
+    dataset = dataset.select(range(min(n, len(dataset))))
+    print(f"\n[INFO] Building buffer: {len(dataset)} samples from {cfg['dataset']['source']}")
 
     samples = []
-
     skipped = 0
-
-    # ---------------------------------------
-    # Main Extraction Loop
-    # ---------------------------------------
+    pooling = cfg["activation"].get("pooling", "mean")
 
     for idx, item in enumerate(tqdm(dataset)):
-
         try:
-
             text = item["text"]
-
-            if not isinstance(text, str):
+            if not isinstance(text, str) or len(text.strip()) < 20:
                 skipped += 1
                 continue
 
-            text = text.strip()
+            text = text.strip()[:cfg["dataset"]["max_text_chars"]]
 
-            if len(text) < 20:
-                skipped += 1
-                continue
-
-            # ---------------------------------------
-            # Truncate Text
-            # ---------------------------------------
-
-            text = text[:512]
-
-            # ---------------------------------------
-            # Extract Activation
-            # ---------------------------------------
-
-            activation = extractor.extract(text)
-            # ---------------------------------------
-            # Generate Semantic Description
-            # ---------------------------------------
-
+            activation = extractor.extract_pooled(text, pooling=pooling)
             description = labeler.describe(text)
 
             samples.append({
                 "id": idx,
                 "text": text,
                 "description": description,
-                "activation": activation.cpu()
+                "activation": activation.cpu(),
             })
 
         except Exception as e:
-
             skipped += 1
+            print(f"\n[WARN] Skipped sample {idx}: {e}")
 
-            print(
-                f"\n[WARNING] Failed sample "
-                f"{idx}: {str(e)}"
-            )
-
-    # ---------------------------------------
-    # Save Dataset
-    # ---------------------------------------
-
-    save_dataset(
-        samples,
-        str(output_path)
-    )
-
-    # ---------------------------------------
-    # Save Metadata
-    # ---------------------------------------
+    save_dataset(samples, str(output_path))
 
     metadata = {
         "model": cfg["model"]["target_name"],
         "layer_idx": cfg["activation"]["layer_idx"],
+        "pooling": pooling,
         "normalize": cfg["activation"]["normalize"],
-        "max_length": cfg["activation"]["max_length"],
         "num_samples": len(samples),
         "skipped_samples": skipped,
-        "hidden_dim": (
-            samples[0]["activation"].shape[-1]
-            if len(samples) > 0
-            else None
-        )
+        "hidden_dim": int(samples[0]["activation"].shape[-1]) if samples else None,
     }
-
     with open(metadata_path, "w") as f:
+        json.dump(metadata, f, indent=2)
 
-        json.dump(
-            metadata,
-            f,
-            indent=2
-        )
+    print(f"\n========== BUFFER SUMMARY ==========")
+    print(f"Saved:   {len(samples)}")
+    print(f"Skipped: {skipped}")
+    if samples:
+        print(f"Dim:     {samples[0]['activation'].shape[-1]}")
+    print(f"Output:  {output_path}")
+    print(f"[OK] Buffer complete.")
 
-    # ---------------------------------------
-    # Final Summary
-    # ---------------------------------------
 
-    print("\n========== BUFFER SUMMARY ==========")
-
-    print(f"Saved samples: {len(samples)}")
-    print(f"Skipped samples: {skipped}")
-
-    if len(samples) > 0:
-
-        print(
-            f"Activation dim: "
-            f"{samples[0]['activation'].shape[-1]}"
-        )
-
-    print(f"\nDataset saved to:")
-    print(output_path)
-
-    print(f"\nMetadata saved to:")
-    print(metadata_path)
-
-    print("\n[OK] Activation buffer completed.")
+def main():
+    cfg = load_config()
+    build_buffer(cfg)
 
 
 if __name__ == "__main__":

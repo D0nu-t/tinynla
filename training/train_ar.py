@@ -1,16 +1,32 @@
-import json
-import yaml
-import torch
+"""
+training/train_ar.py
 
-from tqdm import tqdm
+Stage 1: Train the Activation Reconstructor.
+
+Reads config via load_config() which checks TINYNLA_CONFIG env var first,
+allowing layer_sweep.py to inject per-layer configs without modifying this file.
+
+Saves:
+    <save_dir>/best_model.pt   — lowest training-loss checkpoint
+    <save_dir>/latest_model.pt — end-of-last-epoch checkpoint
+    <save_dir>/config.json     — config snapshot for reproducibility
+    <save_dir>/metrics.json    — per-epoch training metrics
+"""
+
+import json
+from pathlib import Path
+
+import torch
 from dotenv import load_dotenv
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from nla.dataset import ActivationDataset
-from nla.reconstructor import ActivationReconstructor
 from nla.losses import cosine_loss
 from nla.metrics import cosine_similarity_metric
+from nla.reconstructor import ActivationReconstructor
 from nla.tracking import WandbTracker
+from nla.utils import load_config, resolve_device, set_seed
 
 load_dotenv()
 
@@ -18,185 +34,151 @@ load_dotenv()
 def collate(batch):
     return {
         "texts": [x["description"] for x in batch],
-        "activations": torch.stack(
-            [x["activation"] for x in batch]
-        )
+        "activations": torch.stack([x["activation"] for x in batch]),
     }
 
 
-def save_config(cfg, path):
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
+def train_ar(cfg: dict) -> None:
+    device = resolve_device(cfg)
+    set_seed(cfg["experiment"]["seed"])
 
+    print(f"\n[INFO] Device: {device}")
+    if device == "cuda":
+        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
 
-def main():
+    save_dir = Path(cfg["training"]["save_dir"])
+    save_dir.mkdir(parents=True, exist_ok=True)
 
-    cfg = yaml.safe_load(open("configs/base.yaml"))
-
-    device = cfg["device"]
-
+    # ------------------------------------------------------------------
+    # Tracking
+    # ------------------------------------------------------------------
     tracker = None
-
     if cfg["tracking"]["use_wandb"]:
-
         tracker = WandbTracker(
             project=cfg["tracking"]["project"],
             run_name=cfg["tracking"]["run_name"],
             config=cfg,
         )
 
-    dataset = ActivationDataset(
-        "datasets/activation_buffer/buffer.pt"
-    )
-
+    # ------------------------------------------------------------------
+    # Dataset
+    # ------------------------------------------------------------------
+    buffer_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
+    dataset = ActivationDataset(str(buffer_path))
     loader = DataLoader(
         dataset,
         batch_size=cfg["training"]["batch_size"],
         shuffle=True,
-        collate_fn=collate
+        collate_fn=collate,
+        num_workers=0,
     )
+    print(f"[INFO] Dataset: {len(dataset)} samples")
 
+    # ------------------------------------------------------------------
+    # Model
+    # ------------------------------------------------------------------
     sample_dim = dataset[0]["activation"].shape[-1]
-
     model = ActivationReconstructor(
+        encoder_name=cfg["training"].get("encoder_name", "distilbert-base-uncased"),
         output_dim=sample_dim,
-        hidden_dim=cfg["training"]["hidden_dim"]
+        hidden_dim=cfg["training"]["hidden_dim"],
     ).to(device)
 
+    # ------------------------------------------------------------------
+    # Optimizer + AMP
+    # ------------------------------------------------------------------
     opt = torch.optim.AdamW(
         model.parameters(),
-        lr=float(cfg["training"]["lr"])
+        lr=float(cfg["training"]["lr"]),
+        weight_decay=float(cfg["training"]["weight_decay"]),
     )
+    use_amp = device == "cuda"
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    grad_clip = float(cfg["training"]["grad_clip"])
+    patience = cfg["training"].get("early_stopping_patience", 5)
+    epochs = cfg["training"]["epochs"]
 
     best_loss = float("inf")
+    epochs_without_improvement = 0
+    all_metrics = []
 
-    checkpoint_dir = "checkpoints/ar"
-
-    save_config(
-        cfg,
-        f"{checkpoint_dir}/config.json"
-    )
-
-    for epoch in range(cfg["training"]["epochs"]):
-
+    # ------------------------------------------------------------------
+    # Training Loop
+    # ------------------------------------------------------------------
+    for epoch in range(epochs):
         model.train()
+        losses, cosines = [], []
 
-        losses = []
-        cosines = []
-
-        progress_bar = tqdm(
-            enumerate(loader),
-            total=len(loader)
-        )
-
-        for batch_idx, batch in progress_bar:
-
+        bar = tqdm(enumerate(loader), total=len(loader), desc=f"epoch={epoch}")
+        for step, batch in bar:
             target = batch["activations"].to(device)
 
-            pred = model(
-                batch["texts"],
-                device
-            )
-
-            loss = cosine_loss(
-                pred,
-                target
-            )
-
-            cosine = cosine_similarity_metric(
-                pred,
-                target
-            )
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                pred = model(batch["texts"], device)
+                loss = cosine_loss(pred, target)
 
             opt.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            scaler.step(opt)
+            scaler.update()
 
-            loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(
-                model.parameters(),
-                max_norm=1.0
-            )
-
-            opt.step()
-
+            cos = cosine_similarity_metric(pred.detach(), target)
             losses.append(loss.item())
-            cosines.append(cosine.item())
+            cosines.append(cos)
 
-            progress_bar.set_description(
-                f"epoch={epoch} "
-                f"loss={loss.item():.4f} "
-                f"cos={cosine.item():.4f}"
-            )
+            bar.set_postfix(loss=f"{loss.item():.4f}", cos=f"{cos:.4f}")
 
-            # Optional lightweight step logging
-            if (
-                tracker is not None
-                and batch_idx % 50 == 0
-            ):
-
-                tracker.log({
-                    "train/step_loss": loss.item(),
-                    "train/step_cosine": cosine.item(),
-                })
+            if tracker and step % 50 == 0:
+                tracker.log({"train/step_loss": loss.item(), "train/step_cosine": cos})
 
         avg_loss = sum(losses) / len(losses)
-        avg_cosine = sum(cosines) / len(cosines)
+        avg_cos = sum(cosines) / len(cosines)
 
-        current_lr = opt.param_groups[0]["lr"]
+        print(f"epoch={epoch}  loss={avg_loss:.4f}  cosine={avg_cos:.4f}")
 
-        print(
-            f"epoch={epoch} "
-            f"loss={avg_loss:.4f} "
-            f"cosine={avg_cosine:.4f}"
-        )
+        epoch_metrics = {"epoch": epoch, "loss": avg_loss, "cosine": avg_cos}
+        all_metrics.append(epoch_metrics)
 
-        if tracker is not None:
+        if tracker:
+            tracker.log({"train/loss": avg_loss, "train/cosine": avg_cos, "train/epoch": epoch}, step=epoch)
 
-            tracker.log({
-                "train/loss": avg_loss,
-                "train/cosine": avg_cosine,
-                "train/lr": current_lr,
-                "train/epoch": epoch
-            }, step=epoch)
+        # Latest checkpoint (always overwritten)
+        torch.save(model.state_dict(), save_dir / "latest_model.pt")
 
-        # Save latest checkpoint
-        latest_checkpoint = (
-            f"{checkpoint_dir}/latest_model.pt"
-        )
-
-        torch.save(
-            model.state_dict(),
-            latest_checkpoint
-        )
-
-        # Save best checkpoint
+        # Best checkpoint
         if avg_loss < best_loss:
-
             best_loss = avg_loss
+            epochs_without_improvement = 0
+            torch.save(model.state_dict(), save_dir / "best_model.pt")
+            print(f"  -> Best model saved (loss={best_loss:.4f})")
+        else:
+            epochs_without_improvement += 1
+            if epochs_without_improvement >= patience:
+                print(f"[INFO] Early stopping at epoch {epoch}.")
+                break
 
-            best_checkpoint = (
-                f"{checkpoint_dir}/best_model.pt"
-            )
+    # ------------------------------------------------------------------
+    # Save metadata
+    # ------------------------------------------------------------------
+    with open(save_dir / "config.json", "w") as f:
+        json.dump(cfg, f, indent=2, default=str)
 
-            torch.save(
-                model.state_dict(),
-                best_checkpoint
-            )
+    with open(save_dir / "metrics.json", "w") as f:
+        json.dump({"training_history": all_metrics, "best_loss": best_loss}, f, indent=2)
 
-            print(
-                f"[INFO] New best model saved "
-                f"(loss={best_loss:.4f})"
-            )
-
-    print("\n[OK] Training completed.")
-
-    if tracker is not None:
-
-        tracker.save_model(
-            f"{checkpoint_dir}/best_model.pt"
-        )
-
+    if tracker:
+        tracker.save_model(str(save_dir / "best_model.pt"))
         tracker.finish()
+
+    print(f"\n[OK] Training complete. Best loss: {best_loss:.4f}")
+
+
+def main():
+    cfg = load_config()
+    train_ar(cfg)
 
 
 if __name__ == "__main__":
