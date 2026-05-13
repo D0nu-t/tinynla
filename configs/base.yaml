@@ -1,25 +1,242 @@
+# ==========================================================
+# TinyNLA Base Configuration
+# ==========================================================
+#
+# Core experiment configuration for:
+#   - activation extraction
+#   - dataset construction
+#   - activation reconstruction
+#   - functional evaluation
+#   - layer sweep experimentation
+#
+# ==========================================================
+
+experiment:
+
+  # Human-readable experiment name
+  name: "gpt2_nla_research"
+
+  # Optional notes
+  description: >
+    TinyNLA experiment using GPT-2 hidden activations
+    with semantic reconstruction and activation patching.
+
+  # Random seed for reproducibility
+  seed: 42
+
+
+# ==========================================================
+# Target Language Model
+# ==========================================================
+
 model:
+
+  # HuggingFace model identifier
   target_name: "gpt2"
 
+  # Future:
+  #   tiny-gpt2
+  #   Qwen/Qwen2.5-3B
+  #   mistralai/Mistral-7B-v0.1
+  #   meta-llama/Llama-3-8B
+
+  trust_remote_code: false
+
+
+# ==========================================================
+# Activation Extraction
+# ==========================================================
+
 activation:
+
+  # Primary layer for single-run experiments
   layer_idx: 5
+
+  # Used for layer sweep experiments
+  layer_indices:
+    - 1
+    - 3
+    - 5
+    - 7
+    - 9
+    - 11
+
+  # Token truncation length
   max_length: 64
+
+  # Pooling mode
+  #
+  # Options:
+  #   last_token
+  #   mean
+  #
+  pooling: "mean"
+
+  # Normalize activation vectors
   normalize: true
 
+  # Hook point type
+  #
+  # Future:
+  #   mlp
+  #   attention
+  #   residual
+  #
+  hook_point: "residual"
+
+
+# ==========================================================
+# Dataset Generation
+# ==========================================================
+
 dataset:
+
+  # Number of text samples
   num_samples: 20000
+
+  # TinyStories dataset
+  source: "roneneldan/TinyStories"
+
+  # Max raw text chars
+  max_text_chars: 256
+
+  # Output directory
   output_dir: "datasets/activation_buffer"
 
+  # Shuffle dataset before selection
+  shuffle: true
+
+  # Semantic labeling mode
+  #
+  # Options:
+  #   heuristic
+  #   structured
+  #
+  labeling_strategy: "heuristic"
+
+
+# ==========================================================
+# Activation Reconstructor
+# ==========================================================
+
 training:
+
+  # Training batch size
   batch_size: 16
+
+  # Learning rate
   lr: 0.0001
+
+  # Number of epochs
   epochs: 10
+
+  # Hidden size of reconstructor MLP
   hidden_dim: 2048
+
+  # Checkpoint path
   save_dir: "checkpoints/ar"
 
+  # Save best checkpoint only
+  save_best_only: true
+
+  # Gradient clipping
+  grad_clip: 1.0
+
+  # Weight decay
+  weight_decay: 0.01
+
+  # Early stopping patience
+  early_stopping_patience: 5
+
+
+# ==========================================================
+# Evaluation
+# ==========================================================
+
+evaluation:
+
+  # Number of samples for evaluation
+  num_eval_samples: 200
+
+  # Top-k overlap metric
+  topk: 10
+
+  # Evaluate random baseline
+  evaluate_random: true
+
+  # Evaluate zero baseline
+  evaluate_zero: true
+
+  # Future interpolation evaluation
+  evaluate_interpolation: true
+
+
+# ==========================================================
+# Experiment Tracking
+# ==========================================================
+
 tracking:
+
+  # Enable Weights & Biases
   use_wandb: true
+
+  # W&B project
   project: "TinyNLA"
-  run_name: "gpt2_layer3_meanpool"
-  
-device: "cpu"
+
+  # Run identifier
+  run_name: "gpt2_layer5_meanpool"
+
+  # Save model artifacts
+  log_model_artifacts: true
+
+  # Save evaluation tables
+  log_tables: true
+
+
+# ==========================================================
+# Runtime
+# ==========================================================
+
+device: "auto"
+
+# Recommended:
+#
+#   "cuda"
+#   "cpu"
+#   "auto"
+#
+# "auto" resolves dynamically:
+#
+#   cuda -> mps -> cpu
+
+
+# ==========================================================
+# Output Structure
+# ==========================================================
+
+paths:
+
+  logs_dir: "logs"
+
+  experiment_dir: "experiments"
+
+  metrics_dir: "metrics"
+
+
+# ==========================================================
+# Future Extensions
+# ==========================================================
+#
+# Planned Upgrades
+#
+#   - multi-layer joint AR
+#   - latent interpolation
+#   - semantic steering
+#   - diffusion latent decoder
+#   - token-level reconstruction
+#   - sparse autoencoder latent space
+#   - cross-model transfer
+#   - activation editing
+#   - perplexity-preserving reconstruction
+#
+# ==========================================================

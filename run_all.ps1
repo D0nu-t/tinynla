@@ -1,116 +1,209 @@
-# run_all.ps1
+# ==========================================================
+# TinyNLA Research Pipeline Runner
+# ==========================================================
 #
-# TinyNLA MVP Sequential Runner
+# Full Sequential Pipeline
 #
-# Runs:
-#   1. Activation buffer creation
-#   2. Activation reconstructor training
-#   3. Reconstruction evaluation
+# Stages
+# -------
+#   1. Build activation buffer
+#   2. Train activation reconstructor
+#   3. Evaluate reconstruction quality
+#   4. Run functional activation patching evaluation
 #
-# Usage:
+# Optional Modes
+# --------------
+#   Standard:
 #
-#   powershell -ExecutionPolicy Bypass -File run_all.ps1
+#       .\run_all.ps1
 #
-# OR inside PowerShell:
+#   Layer Sweep:
 #
-#   .\run_all.ps1
+#       .\run_all.ps1 -Sweep
 #
+# ==========================================================
 
-Write-Host ""
-Write-Host "=================================================="
-Write-Host "TinyNLA MVP Pipeline"
-Write-Host "=================================================="
-Write-Host ""
+param(
+    [switch]$Sweep
+)
 
-###############################################################################
-# STEP 1 — BUILD ACTIVATION BUFFER
-###############################################################################
+# ==========================================================
+# Helpers
+# ==========================================================
 
-Write-Host "[1/4] Building activation buffer..."
-Write-Host ""
+function Print-Header($msg) {
 
-python -m training.build_buffer
-
-if ($LASTEXITCODE -ne 0) {
     Write-Host ""
-    Write-Host "[ERROR] build_buffer failed."
-    exit 1
+    Write-Host "=================================================="
+    Write-Host $msg
+    Write-Host "=================================================="
+    Write-Host ""
+}
+
+function Run-Step($stepName, $command) {
+
+    Write-Host ""
+    Write-Host $stepName
+    Write-Host ""
+
+    Invoke-Expression $command
+
+    if ($LASTEXITCODE -ne 0) {
+
+        Write-Host ""
+        Write-Host "[ERROR] Step failed:"
+        Write-Host $stepName
+        Write-Host ""
+
+        exit 1
+    }
+
+    Write-Host ""
+    Write-Host "[OK] Completed:"
+    Write-Host $stepName
+    Write-Host ""
+}
+
+# ==========================================================
+# Startup
+# ==========================================================
+
+Print-Header "TinyNLA Research Pipeline"
+
+Write-Host "Environment"
+Write-Host "-----------"
+
+Write-Host ("Python: " + (python --version))
+
+if ($env:CUDA_VISIBLE_DEVICES) {
+
+    Write-Host (
+        "CUDA_VISIBLE_DEVICES=" +
+        $env:CUDA_VISIBLE_DEVICES
+    )
 }
 
 Write-Host ""
-Write-Host "[OK] Activation buffer completed."
+
+# ==========================================================
+# Layer Sweep Mode
+# ==========================================================
+
+if ($Sweep) {
+
+    Print-Header "Running Layer Sweep"
+
+    Run-Step `
+        "[Sweep] Multi-layer experiment orchestration" `
+        "python -m training.layer_sweep"
+
+    Print-Header "Layer Sweep Completed"
+
+    exit 0
+}
+
+# ==========================================================
+# STEP 1 — BUILD BUFFER
+# ==========================================================
+
+Run-Step `
+    "[1/4] Building activation buffer" `
+    "python -m training.build_buffer"
+
+# ==========================================================
+# STEP 2 — TRAIN AR
+# ==========================================================
+
+Run-Step `
+    "[2/4] Training activation reconstructor" `
+    "python -m training.train_ar"
+
+# ==========================================================
+# STEP 3 — RECONSTRUCTION EVAL
+# ==========================================================
+
+Run-Step `
+    "[3/4] Evaluating reconstruction quality" `
+    "python -m training.eval_patch"
+
+# ==========================================================
+# STEP 4 — FUNCTIONAL EVAL
+# ==========================================================
+
+Run-Step `
+    "[4/4] Running functional activation evaluation" `
+    "python -m training.eval_functional"
+
+# ==========================================================
+# Final Summary
+# ==========================================================
+
+Print-Header "TinyNLA Pipeline Completed"
+
+Write-Host "Artifacts"
+Write-Host "---------"
 Write-Host ""
 
-###############################################################################
-# STEP 2 — TRAIN ACTIVATION RECONSTRUCTOR
-###############################################################################
-
-Write-Host "[2/4] Training activation reconstructor..."
+Write-Host "Dataset"
+Write-Host "  datasets/activation_buffer/buffer.pt"
 Write-Host ""
 
-python -m training.train_ar
+Write-Host "Checkpoint"
+Write-Host "  checkpoints/ar/model.pt"
+Write-Host ""
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "[ERROR] train_ar failed."
-    exit 1
+Write-Host "Metrics"
+Write-Host "  checkpoints/ar/metrics.json"
+Write-Host ""
+
+# ==========================================================
+# Optional W&B Notice
+# ==========================================================
+
+Write-Host "Tracking"
+Write-Host "--------"
+
+if ($env:WANDB_API_KEY) {
+
+    Write-Host "W&B logging enabled"
+}
+else {
+
+    Write-Host "W&B API key not detected"
 }
 
 Write-Host ""
-Write-Host "[OK] Training completed."
+
+# ==========================================================
+# Recommended Next Experiments
+# ==========================================================
+
+Write-Host "Recommended Next Steps"
+Write-Host "----------------------"
 Write-Host ""
 
-###############################################################################
-# STEP 3 — EVALUATE MODEL
-###############################################################################
-
-Write-Host "[3/4] Evaluating reconstruction quality..."
+Write-Host "1. Run layer sweep"
+Write-Host "     .\run_all.ps1 -Sweep"
 Write-Host ""
 
-python -m training.eval_patch
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "[ERROR] eval_patch failed."
-    exit 1
-}
-
-###############################################################################
-# STEP 4 — FUNCTIONAL EVALUATION
-###############################################################################
-
-Write-Host "[4/4] Running activation patching evaluation..."
+Write-Host "2. Compare semantic recoverability by depth"
 Write-Host ""
 
-python -m training.eval_functional
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "[ERROR] eval_functional failed."
-    exit 1
-}
-
-Write-Host ""
-Write-Host "[OK] Functional evaluation completed."
+Write-Host "3. Add interpolation experiments"
 Write-Host ""
 
-Write-Host ""
-Write-Host "=================================================="
-Write-Host "TinyNLA MVP Pipeline Completed"
-Write-Host "=================================================="
+Write-Host "4. Add perplexity-shift evaluation"
 Write-Host ""
 
-Write-Host "Artifacts:"
+Write-Host "5. Upgrade AR architecture"
+Write-Host "     - residual MLP"
+Write-Host "     - transformer decoder"
+Write-Host "     - diffusion latent model"
 Write-Host ""
 
-Write-Host "  Dataset:"
-Write-Host "    datasets/activation_buffer/buffer.pt"
-Write-Host ""
+# ==========================================================
+# Done
+# ==========================================================
 
-Write-Host "  Trained Model:"
-Write-Host "    checkpoints/ar/model.pt"
-Write-Host ""
-
-Write-Host "Next Recommended Step:"
-Write-Host "  Implement activation patching evaluation."
+Write-Host "[OK] Pipeline finished successfully."
 Write-Host ""

@@ -1,67 +1,111 @@
-"""
-text
-  ↓
-transformer encoder
-  ↓
-mean pooling
-  ↓
-MLP projection
-  ↓
-activation vector
-"""
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from transformers import AutoModel, AutoTokenizer
+from transformers import (
+    AutoTokenizer,
+    AutoModel
+)
 
 
-class ActivationReconstructor(nn.Module):
+class TokenLevelReconstructor(nn.Module):
+
     def __init__(
         self,
-        encoder_name="distilbert-base-uncased",
-        output_dim=768,
-        hidden_dim=2048
+        hidden_dim,
+        n_layers=4,
+        n_heads=8,
+        max_len=64,
+        encoder_name="BAAI/bge-base-en-v1.5"
     ):
+
         super().__init__()
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            encoder_name
+        self.tokenizer = (
+            AutoTokenizer.from_pretrained(
+                encoder_name
+            )
         )
 
-        self.encoder = AutoModel.from_pretrained(
-            encoder_name
+        self.encoder = (
+            AutoModel.from_pretrained(
+                encoder_name
+            )
         )
 
-        encoder_dim = self.encoder.config.hidden_size
-
-        self.projector = nn.Sequential(
-            nn.Linear(encoder_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, output_dim)
+        embed_dim = (
+            self.encoder.config.hidden_size
         )
 
-    def encode_text(self, texts, device):
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=embed_dim,
+            nhead=n_heads,
+            batch_first=True
+        )
+
+        self.decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=n_layers
+        )
+
+        self.positional = nn.Parameter(
+            torch.randn(
+                1,
+                max_len,
+                embed_dim
+            )
+        )
+
+        self.output_proj = nn.Linear(
+            embed_dim,
+            hidden_dim
+        )
+
+        self.max_len = max_len
+
+    def encode_text(
+        self,
+        texts,
+        device
+    ):
+
         toks = self.tokenizer(
             texts,
-            return_tensors="pt",
             padding=True,
-            truncation=True
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt"
         ).to(device)
 
         outputs = self.encoder(**toks)
 
-        hidden = outputs.last_hidden_state
+        return outputs.last_hidden_state
 
-        pooled = hidden.mean(dim=1)
+    def forward(
+        self,
+        texts,
+        seq_len,
+        device
+    ):
 
-        return pooled
+        semantic_tokens = self.encode_text(
+            texts,
+            device
+        )
 
-    def forward(self, texts, device):
-        pooled = self.encode_text(texts, device)
+        batch_size = semantic_tokens.shape[0]
 
-        vec = self.projector(pooled)
+        queries = (
+            self.positional[:, :seq_len]
+            .repeat(batch_size, 1, 1)
+        )
 
-        vec = F.normalize(vec, dim=-1)
+        decoded = self.decoder(
+            tgt=queries,
+            memory=semantic_tokens
+        )
 
-        return vec
+        activations = self.output_proj(
+            decoded
+        )
+
+        return activations
