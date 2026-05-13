@@ -17,4 +17,9 @@ training:
   hidden_dim: 2048
   save_dir: "checkpoints/ar"
 
+tracking:
+  use_wandb: true
+  project: "TinyNLA"
+  run_name: "gpt2_layer3_meanpool"
+  
 device: "cpu"

@@ -29,9 +29,22 @@ def main():
     cfg = yaml.safe_load(
         open("configs/base.yaml")
     )
-
+    from nla.tracking import WandbTracker
     device = cfg["device"]
+    tracker = None
 
+    if cfg["tracking"]["use_wandb"]:
+        tracker = WandbTracker(
+            project=cfg["tracking"]["project"],
+            run_name=cfg["tracking"]["run_name"],
+            config=cfg,
+    )
+    tracker.log({
+    "eval/kl_divergence": kl,
+    "eval/topk_overlap": topk,
+    "eval/logit_cosine": cosine,
+    "eval/perplexity_shift": ppl_shift,
+})
     #
     # Load target LM
     #
