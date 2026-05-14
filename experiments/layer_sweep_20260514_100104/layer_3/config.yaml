@@ -1,0 +1,68 @@
+experiment:
+  name: gpt2_nla_research
+  description: 'TinyNLA: text-conditioned residual stream reconstruction on GPT-2
+    with mean-pooled activations, interpolation patching, and multi-layer functional
+    evaluation.
+
+    '
+  seed: 42
+model:
+  target_name: gpt2
+  trust_remote_code: false
+activation:
+  layer_idx: 3
+  layer_indices:
+  - 1
+  - 3
+  - 5
+  - 7
+  - 9
+  - 11
+  max_length: 64
+  pooling: mean
+  normalize: true
+dataset:
+  num_samples: 20000
+  source: roneneldan/TinyStories
+  max_text_chars: 256
+  output_dir: experiments\layer_sweep_20260514_100104\layer_3\dataset
+  shuffle: true
+training:
+  batch_size: 16
+  lr: 0.0001
+  epochs: 10
+  hidden_dim: 2048
+  save_dir: experiments\layer_sweep_20260514_100104\layer_3\checkpoints
+  grad_clip: 1.0
+  weight_decay: 0.01
+  early_stopping_patience: 5
+  reconstructor_type: pooled_mlp
+  encoder_name: distilbert-base-uncased
+evaluation:
+  num_eval_samples: 200
+  topk: 10
+  baselines:
+    random: true
+    zero: true
+  interpolation:
+    enabled: true
+    alphas:
+    - 0.0
+    - 0.1
+    - 0.25
+    - 0.5
+    - 0.75
+    - 1.0
+    num_pairs: 50
+  perplexity_shift: true
+tracking:
+  use_wandb: true
+  project: TinyNLA
+  run_name: gpt2_layer_3
+  log_model_artifacts: true
+  log_tables: true
+device: auto
+paths:
+  logs_dir: logs
+  experiment_dir: experiments
+  metrics_dir: metrics
