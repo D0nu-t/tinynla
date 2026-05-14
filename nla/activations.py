@@ -184,3 +184,5 @@ class MultiLayerExtractor:
                 vec = F.normalize(vec, dim=-1)
             result[idx] = vec.squeeze(0).cpu()
         return result
+
+        
