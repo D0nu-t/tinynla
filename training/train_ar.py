@@ -93,7 +93,8 @@ def train_ar(cfg: dict) -> None:
         weight_decay=float(cfg["training"]["weight_decay"]),
     )
     use_amp = device == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    device_type = "cuda" if device == "cuda" else "cpu"
+    scaler = torch.amp.GradScaler(enabled=use_amp)
 
     grad_clip = float(cfg["training"]["grad_clip"])
     patience = cfg["training"].get("early_stopping_patience", 5)
