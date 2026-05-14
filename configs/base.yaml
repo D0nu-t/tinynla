@@ -30,7 +30,7 @@ dataset:
   num_samples: 20000
   source: "roneneldan/TinyStories"
   max_text_chars: 256
-  output_dir: "datasets/activation_buffer"
+  output_dir: "activation_data/activation_buffer"
   shuffle: true
 
 training:

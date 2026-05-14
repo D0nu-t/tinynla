@@ -13,7 +13,8 @@ huggingface/
 # Datasets
 datasets/activation_buffer/*.pt
 datasets/**/*.pt
-
+activation_data/
+experiments/**
 # Model checkpoints
 checkpoints/
 *.ckpt
