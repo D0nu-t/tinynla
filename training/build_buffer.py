@@ -74,7 +74,7 @@ def build_buffer(cfg: dict) -> None:
 
             text = text.strip()[:cfg["dataset"]["max_text_chars"]]
 
-            activation = extractor.extract_pooled(text, pooling=pooling)
+            activation = extractor.extract(text, mode="sequence", pooling=pooling)
             description = labeler.describe(text)
 
             samples.append({
