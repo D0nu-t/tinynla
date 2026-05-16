@@ -33,7 +33,8 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-
+import torch
+from dotenv import load_dotenv
 from nla.utils import load_config
 
 
@@ -107,6 +108,9 @@ def main():
             print(f"\n  [{step_name}]")
             try:
                 run_step(cmd, env)
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             except RuntimeError as e:
                 print(f"  [ERROR] {e}")
                 failed = True

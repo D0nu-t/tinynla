@@ -1,18 +1,8 @@
 """
 training/build_buffer.py
-
-Stage 0: Build the activation buffer.
-
-Reads config from TINYNLA_CONFIG env var (set by layer_sweep.py)
-or falls back to configs/base.yaml.
-
-Output per run:
-    <output_dir>/buffer.pt       — list of {id, text, description, activation}
-    <output_dir>/metadata.json   — config snapshot + dataset statistics
 """
 
 import json
-import sys
 from pathlib import Path
 
 import torch
@@ -32,18 +22,12 @@ def build_buffer(cfg: dict) -> None:
     device = resolve_device(cfg)
     set_seed(cfg["experiment"]["seed"])
 
-    print(f"\n[INFO] Device: {device}")
-    if device == "cuda":
-        print(f"[INFO] GPU: {torch.cuda.get_device_name(0)}")
-
     output_dir = Path(cfg["dataset"]["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+
     output_path = output_dir / "buffer.pt"
     metadata_path = output_dir / "metadata.json"
 
-    # ------------------------------------------------------------------
-    # Extractor + Labeler
-    # ------------------------------------------------------------------
     extractor = ActivationExtractor(
         model_name=cfg["model"]["target_name"],
         layer_idx=cfg["activation"]["layer_idx"],
@@ -51,19 +35,19 @@ def build_buffer(cfg: dict) -> None:
         max_length=cfg["activation"]["max_length"],
         normalize=cfg["activation"]["normalize"],
     )
+
     labeler = SemanticLabeler()
 
-    # ------------------------------------------------------------------
-    # Dataset
-    # ------------------------------------------------------------------
-    dataset = load_dataset(cfg["dataset"]["source"], split="train")
+    dataset = load_dataset(
+        cfg["dataset"]["source"],
+        split="train"
+    )
+
     n = cfg["dataset"]["num_samples"]
     dataset = dataset.select(range(min(n, len(dataset))))
-    print(f"\n[INFO] Building buffer: {len(dataset)} samples from {cfg['dataset']['source']}")
 
     samples = []
     skipped = 0
-    #pooling = cfg["activation"].get("pooling", "mean")
 
     for idx, item in enumerate(tqdm(dataset)):
         try:
@@ -74,56 +58,50 @@ def build_buffer(cfg: dict) -> None:
                 continue
 
             text = text.strip()
+
             if len(text) < 20:
                 skipped += 1
                 continue
 
             text = text[:cfg["dataset"]["max_text_chars"]]
 
-            activation = extractor.extract_sequence(text)
-
-            toks = extractor.tokenizer(
-                text,
-                truncation=True,
-                max_length=cfg["activation"]["max_length"],
-                return_tensors="pt",
-            )
+            activation_sequence = extractor.extract_sequence(text)
 
             description = labeler.describe(text)
 
-            samples.append({
-                "id": idx,
-                "text": text,
-                "description": description,
-                "activation": activation.cpu(),
-                "input_ids": toks["input_ids"].squeeze(0).cpu(),
-            })
+            samples.append(
+                {
+                    "id": idx,
+                    "text": text,
+                    "description": description,
+                    "activation_sequence": activation_sequence.cpu(),
+                    "seq_len": activation_sequence.shape[0],
+                }
+            )
 
         except Exception as e:
             skipped += 1
-            print(f"\n[WARN] Skipped sample {idx}: {e}")
+            print(f"[WARN] skipped sample {idx}: {e}")
 
     save_dataset(samples, str(output_path))
 
     metadata = {
-    "model": cfg["model"]["target_name"],
-    "layer_idx": cfg["activation"]["layer_idx"],
-    "normalize": cfg["activation"]["normalize"],
-    "num_samples": len(samples),
-    "skipped_samples": skipped,
-    "hidden_dim": int(samples[0]["activation"].shape[-1]),
-    "sequence_mode": True,
-}
+        "model": cfg["model"]["target_name"],
+        "layer_idx": cfg["activation"]["layer_idx"],
+        "normalize": cfg["activation"]["normalize"],
+        "num_samples": len(samples),
+        "skipped_samples": skipped,
+        "hidden_dim": samples[0]["activation_sequence"].shape[-1]
+        if samples
+        else None,
+        "sequence_mode": True,
+    }
+
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
-    print(f"\n========== BUFFER SUMMARY ==========")
-    print(f"Saved:   {len(samples)}")
-    print(f"Skipped: {skipped}")
-    if samples:
-        print(f"Dim:     {samples[0]['activation'].shape[-1]}")
-    print(f"Output:  {output_path}")
-    print(f"[OK] Buffer complete.")
+    print(f"[OK] saved {len(samples)} samples")
+    print(f"[OK] skipped {skipped}")
 
 
 def main():
