@@ -1,4 +1,4 @@
-# TinyNLA — Execution Notes
+# TinyNLA
 
 ## Requirements
 
