@@ -34,15 +34,18 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nla.dataset import ActivationDataset
+from nla.dataset import SequenceActivationDataset
 from nla.evaluation import (
-    evaluate_all_conditions,
+    evaluate_all_conditions_sequence,
     kl_divergence,
     logit_cosine_similarity,
     perplexity_shift,
     run_interpolation_sweep,
     topk_overlap,
+    evaluate_condition_sequence,
 )
 from nla.reconstructor import ActivationReconstructor
+from nla.reconstructor import TokenLevelReconstructor
 from nla.tracking import WandbTracker
 from nla.utils import load_config, resolve_device, set_seed
 
@@ -97,12 +100,12 @@ def main():
     # Load AR
     # ------------------------------------------------------------------
     buffer_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
-    dataset = ActivationDataset(str(buffer_path))
+    dataset = SequenceActivationDataset(str(buffer_path))
     sample_dim = dataset[0]["activation"].shape[-1]
 
     checkpoint = save_dir / "best_model.pt"
     print(f"[INFO] Loading AR from: {checkpoint}")
-    ar = ActivationReconstructor(
+    ar = TokenLevelReconstructor(
         encoder_name=cfg["training"].get("encoder_name", "distilbert-base-uncased"),
         output_dim=sample_dim,
         hidden_dim=cfg["training"]["hidden_dim"],
@@ -133,7 +136,7 @@ def main():
         with torch.no_grad():
             reconstructed = ar([description], device)
 
-        result = evaluate_all_conditions(
+        result = evaluate_all_conditions_sequence(
             model=lm,
             tokenizer=tokenizer,
             text=text,

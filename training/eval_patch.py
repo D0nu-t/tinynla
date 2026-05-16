@@ -22,6 +22,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from nla.dataset import ActivationDataset
+from nla.reconstructor import TokenLevelReconstructor
+from nla.dataset import SequenceActivationDataset
 from nla.metrics import cosine_similarity_metric
 from nla.reconstructor import ActivationReconstructor
 from nla.utils import load_config, resolve_device
@@ -41,11 +43,11 @@ def main():
     device = resolve_device(cfg)
 
     buffer_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
-    dataset = ActivationDataset(str(buffer_path))
+    dataset = SequenceActivationDataset(str(buffer_path))
     loader = DataLoader(dataset, batch_size=64, collate_fn=collate)
 
     sample_dim = dataset[0]["activation"].shape[-1]
-    model = ActivationReconstructor(
+    model = TokenLevelReconstructor(
         encoder_name=cfg["training"].get("encoder_name", "distilbert-base-uncased"),
         output_dim=sample_dim,
         hidden_dim=cfg["training"]["hidden_dim"],

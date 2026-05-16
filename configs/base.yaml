@@ -6,12 +6,14 @@
 #   2. configs/base.yaml       (default)
 #
 # v3.0 changes from v2.0:
-#   activation.pooling    : "sequence"      (full [seq_len, 768] per sample)
-#   training.reconstructor_type: "token_decoder"
-#   training.encoder_name : "distilgpt2"   (causal; matches GPT-2 bias)
-#   training.foreach      : false           (prevents OOM on <=4 GB VRAM)
-#   tracking.mode         : "offline"       (prevents WandB IPC crash on Windows)
-#   training.batch_size   : 8              (sequence tensors larger than pooled)
+#   activation.pooling         : "sequence"       (full [seq_len, 768] per sample)
+#   training.reconstructor_type: "token_decoder"  (distilgpt2 + TransformerDecoder)
+#   training.encoder_name      : "distilgpt2"     (causal; matches GPT-2 bias)
+#   training.decoder_layers    : 4                (TransformerDecoder depth)
+#   training.decoder_heads     : 8                (TransformerDecoder attention heads)
+#   training.batch_size        : 8                (sequence tensors larger than pooled)
+#   training.foreach           : false            (prevents OOM on <=4 GB VRAM)
+#   tracking.mode              : "offline"        (prevents WandB IPC crash on Windows)
 # ==========================================================
 
 experiment:
@@ -48,15 +50,21 @@ training:
   batch_size: 8          # sequence tensors are [seq_len, 768]; 8 fits 4 GB
   lr: 0.0001
   epochs: 10
-  hidden_dim: 2048
+  hidden_dim: 2048       # kept for legacy pooled_mlp compatibility
   save_dir: "checkpoints/ar"
   grad_clip: 1.0
   weight_decay: 0.01
   early_stopping_patience: 5
+
   # "token_decoder" — distilgpt2 + TransformerDecoder  (v3 default)
   # "pooled_mlp"    — DistilBERT + MLP                 (legacy)
   reconstructor_type: "token_decoder"
   encoder_name: "distilgpt2"
+
+  # TokenLevelReconstructor TransformerDecoder parameters
+  decoder_layers: 4      # number of TransformerDecoder layers
+  decoder_heads: 8       # attention heads (embed_dim 768 must be divisible by this)
+
   # false avoids multi-tensor Adam _foreach_sqrt OOM on small VRAM
   foreach: false
 
