@@ -1,41 +1,52 @@
 """
 training/eval_patch.py
 
-Stage 2a: Geometric reconstruction evaluation.
+Stage 2a: Geometric reconstruction evaluation (sequence mode).
 
-Loads the trained AR and measures mean cosine similarity between
-reconstructed and target activation vectors across the full dataset.
+For each sample, reconstructs the full [seq_len, hidden_dim] activation
+trajectory from its description, then measures per-position cosine similarity
+against the ground-truth trajectory stored in the buffer.
 
-This is a necessary but insufficient success criterion:
-    high cosine -> geometry is recovered
-    but functional patching can still fail if the vector is out-of-distribution
-    for the downstream transformer blocks.
+Cosine is computed only over valid (non-padded) positions using the mask.
 
+This is a necessary but insufficient success criterion — high cosine confirms
+geometry is recovered but does not guarantee functional fidelity under patching.
 Run eval_functional.py for the causal test.
 """
 
+import numpy as np
 from pathlib import Path
+from typing import List
 
 import torch
+import torch.nn.functional as F
 from dotenv import load_dotenv
-from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from nla.dataset import ActivationDataset
+from nla.dataset import SequenceActivationDataset, sequence_collate
 from nla.reconstructor import TokenLevelReconstructor
-from nla.dataset import SequenceActivationDataset
-from nla.metrics import cosine_similarity_metric
-from nla.reconstructor import ActivationReconstructor
 from nla.utils import load_config, resolve_device
 
 load_dotenv()
 
 
-def collate(batch):
-    return {
-        "texts": [x["description"] for x in batch],
-        "activations": torch.stack([x["activation"] for x in batch]),
-    }
+def masked_cosine_metric(
+    pred: torch.Tensor,
+    target: torch.Tensor,
+    mask: torch.Tensor,
+) -> float:
+    """
+    Mean cosine similarity over valid (non-padded) positions.
+
+    pred, target: [batch, seq_len, hidden_dim]
+    mask:         [batch, seq_len]  — True at valid positions
+    """
+    pred = F.normalize(pred, dim=-1)
+    target = F.normalize(target, dim=-1)
+    cosine = (pred * target).sum(dim=-1)        # [batch, seq_len]
+    masked = cosine * mask.float()
+    n_valid = mask.float().sum().clamp(min=1.0)
+    return (masked.sum() / n_valid).item()
 
 
 def main():
@@ -44,28 +55,49 @@ def main():
 
     buffer_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
     dataset = SequenceActivationDataset(str(buffer_path))
-    loader = DataLoader(dataset, batch_size=64, collate_fn=collate)
 
-    sample_dim = dataset[0]["activation"].shape[-1]
+    # Determine hidden_dim from first sample
+    hidden_dim = dataset[0]["activation_sequence"].shape[-1]
+
+    # Build model with config-driven params
     model = TokenLevelReconstructor(
-        encoder_name=cfg["training"].get("encoder_name", "distilbert-base-uncased"),
-        output_dim=sample_dim,
-        hidden_dim=cfg["training"]["hidden_dim"],
+        hidden_dim=hidden_dim,
+        n_layers=cfg["training"]["decoder_layers"],
+        n_heads=cfg["training"]["decoder_heads"],
+        max_len=cfg["activation"]["max_length"],
+        encoder_name=cfg["training"].get("encoder_name", "distilgpt2"),
     ).to(device)
 
     checkpoint = Path(cfg["training"]["save_dir"]) / "best_model.pt"
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.eval()
 
-    sims = []
-    with torch.no_grad():
-        for batch in tqdm(loader, desc="eval_patch"):
-            target = batch["activations"].to(device)
-            pred = model(batch["texts"], device)
-            sims.append(cosine_similarity_metric(pred, target))
+    # Evaluate sample-by-sample to handle variable seq_len correctly.
+    # Batching requires padding; per-sample avoids the complexity for eval.
+    sims: List[float] = []
 
-    mean_sim = sum(sims) / len(sims)
-    print(f"\nmean cosine similarity: {mean_sim:.4f}")
+    with torch.no_grad():
+        for item in tqdm(dataset.samples, desc="eval_patch"):
+            description = item["description"]
+            target_seq = item["activation_sequence"]   # [seq_len, hidden_dim]
+            seq_len = target_seq.shape[0]
+
+            # Reconstruct trajectory at the original seq_len
+            pred_seq = model(
+                [description],
+                seq_len=seq_len,
+                device=device,
+            )   # [1, seq_len, hidden_dim]
+
+            target_on_device = target_seq.unsqueeze(0).to(device)   # [1, seq_len, hidden_dim]
+            mask = torch.ones(1, seq_len, dtype=torch.bool, device=device)
+
+            sim = masked_cosine_metric(pred_seq, target_on_device, mask)
+            sims.append(sim)
+
+    mean_sim = float(np.mean(sims))
+    std_sim = float(np.std(sims))
+    print(f"\nmean cosine similarity: {mean_sim:.4f}  (std={std_sim:.4f})")
     print("[OK] Geometric evaluation complete.")
 
 
