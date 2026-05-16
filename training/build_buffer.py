@@ -16,7 +16,7 @@ from nla.labeler import SemanticLabeler
 from nla.utils import load_config, resolve_device, set_seed
 
 load_dotenv()
-
+print("[OK] Environment variables loaded.")
 
 def build_buffer(cfg: dict) -> None:
     device = resolve_device(cfg)

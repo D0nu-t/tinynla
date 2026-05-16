@@ -24,7 +24,7 @@ from nla.utils import (
 )
 
 load_dotenv()
-
+print("[OK] Environment variables loaded.")
 
 def train_ar(cfg: dict):
 
@@ -80,7 +80,7 @@ def train_ar(cfg: dict):
         foreach=False,
     )
 
-    scaler = torch.cuda.amp.GradScaler(
+    scaler = torch.amp.GradScaler(
         enabled=device == "cuda"
     )
 
@@ -106,7 +106,7 @@ def train_ar(cfg: dict):
 
             seq_len = target.shape[1]
 
-            with torch.cuda.amp.autocast(
+            with torch.amp.autocast(
                 enabled=device == "cuda"
             ):
 

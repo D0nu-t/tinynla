@@ -89,7 +89,7 @@ tracking:
   log_tables: true
   # "offline" prevents WandB Windows IPC socket crash on long sweeps.
   # Sync afterward: wandb sync wandb/run-<id>
-  mode: "offline"
+  mode: "disabled"
 
 device: "auto"   # resolves cuda > cpu
 
