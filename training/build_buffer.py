@@ -63,18 +63,32 @@ def build_buffer(cfg: dict) -> None:
 
     samples = []
     skipped = 0
-    pooling = cfg["activation"].get("pooling", "mean")
+    #pooling = cfg["activation"].get("pooling", "mean")
 
     for idx, item in enumerate(tqdm(dataset)):
         try:
             text = item["text"]
-            if not isinstance(text, str) or len(text.strip()) < 20:
+
+            if not isinstance(text, str):
                 skipped += 1
                 continue
 
-            text = text.strip()[:cfg["dataset"]["max_text_chars"]]
+            text = text.strip()
+            if len(text) < 20:
+                skipped += 1
+                continue
 
-            activation = extractor.extract(text, mode="sequence", pooling=pooling)
+            text = text[:cfg["dataset"]["max_text_chars"]]
+
+            activation = extractor.extract_sequence(text)
+
+            toks = extractor.tokenizer(
+                text,
+                truncation=True,
+                max_length=cfg["activation"]["max_length"],
+                return_tensors="pt",
+            )
+
             description = labeler.describe(text)
 
             samples.append({
@@ -82,6 +96,7 @@ def build_buffer(cfg: dict) -> None:
                 "text": text,
                 "description": description,
                 "activation": activation.cpu(),
+                "input_ids": toks["input_ids"].squeeze(0).cpu(),
             })
 
         except Exception as e:
@@ -91,14 +106,14 @@ def build_buffer(cfg: dict) -> None:
     save_dataset(samples, str(output_path))
 
     metadata = {
-        "model": cfg["model"]["target_name"],
-        "layer_idx": cfg["activation"]["layer_idx"],
-        "pooling": pooling,
-        "normalize": cfg["activation"]["normalize"],
-        "num_samples": len(samples),
-        "skipped_samples": skipped,
-        "hidden_dim": int(samples[0]["activation"].shape[-1]) if samples else None,
-    }
+    "model": cfg["model"]["target_name"],
+    "layer_idx": cfg["activation"]["layer_idx"],
+    "normalize": cfg["activation"]["normalize"],
+    "num_samples": len(samples),
+    "skipped_samples": skipped,
+    "hidden_dim": int(samples[0]["activation"].shape[-1]),
+    "sequence_mode": True,
+}
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
 
