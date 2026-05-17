@@ -107,7 +107,9 @@ def train_ar(cfg: dict):
             seq_len = target.shape[1]
 
             with torch.amp.autocast(
+                device_type=device,
                 enabled=device == "cuda"
+                
             ):
 
                 pred = model(

@@ -1,25 +1,24 @@
 """
 training/eval_functional.py
 
-Stage 2b: Functional activation patching evaluation.
+Stage 2b: Functional activation patching evaluation (sequence mode).
 
-Evaluates whether reconstructed activations preserve downstream computation.
-Three conditions tested against original (unpatched) logits:
-  - reconstructed  — text-conditioned AR output
-  - random         — Gaussian noise (same shape)
-  - zero           — zero vector
+For each sample:
+  1. Tokenize the original text and run the frozen LM to get original logits.
+  2. Reconstruct the full [seq_len, hidden_dim] activation trajectory from
+     the sample's description using TokenLevelReconstructor.
+  3. Patch the trajectory back using SequenceInterpolationPatcher.
+  4. Compare original vs patched logits under three conditions:
+       reconstructed — AR output
+       random        — Gaussian noise, same shape
+       zero          — zeros, same shape
 
 Additionally runs an interpolation sweep:
-  h_patch = alpha * h_reconstructed + (1-alpha) * h_original
+  h_patch[t] = alpha * h_recon[t] + (1 - alpha) * h_orig[t]  per position
   across alphas in cfg["evaluation"]["interpolation"]["alphas"]
 
-This sweep diagnoses whether KL divergence is caused by:
-  (a) reconstruction error — KL rises steeply even at small alpha
-  (b) patching shock — KL only blows up at high alpha
-  These have different fixes.
-
 Outputs:
-    <save_dir>/metrics.json        — full results dict
+    <save_dir>/metrics.json        — 4-condition + PPL shift results
     <save_dir>/interpolation.json  — per-alpha KL/topk/cosine
 """
 
@@ -27,24 +26,18 @@ import json
 from pathlib import Path
 from typing import Dict, List
 
+import numpy as np
 import torch
-import torch.nn.functional as F
 from dotenv import load_dotenv
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from nla.dataset import ActivationDataset
 from nla.dataset import SequenceActivationDataset
 from nla.evaluation import (
     evaluate_all_conditions_sequence,
-    kl_divergence,
-    logit_cosine_similarity,
     perplexity_shift,
-    run_interpolation_sweep,
-    topk_overlap,
-    evaluate_condition_sequence,
+    run_interpolation_sweep_sequence,
 )
-from nla.reconstructor import ActivationReconstructor
 from nla.reconstructor import TokenLevelReconstructor
 from nla.tracking import WandbTracker
 from nla.utils import load_config, resolve_device, set_seed
@@ -57,7 +50,6 @@ def _mean(values: List[float]) -> float:
 
 
 def _std(values: List[float]) -> float:
-    import numpy as np
     return float(np.std(values)) if values else 0.0
 
 
@@ -81,10 +73,11 @@ def main():
             project=cfg["tracking"]["project"],
             run_name=cfg["tracking"]["run_name"] + "_functional",
             config=cfg,
+            mode=cfg["tracking"].get("mode", "offline"),
         )
 
     # ------------------------------------------------------------------
-    # Load target LM
+    # Load target LM (frozen)
     # ------------------------------------------------------------------
     model_name = cfg["model"]["target_name"]
     print(f"[INFO] Loading LM: {model_name}")
@@ -97,24 +90,28 @@ def main():
     topk = cfg["evaluation"]["topk"]
 
     # ------------------------------------------------------------------
-    # Load AR
+    # Load dataset and AR
     # ------------------------------------------------------------------
     buffer_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
     dataset = SequenceActivationDataset(str(buffer_path))
-    sample_dim = dataset[0]["activation"].shape[-1]
+
+    # Derive hidden_dim from buffer, not config, to be safe
+    hidden_dim = dataset[0]["activation_sequence"].shape[-1]
 
     checkpoint = save_dir / "best_model.pt"
     print(f"[INFO] Loading AR from: {checkpoint}")
     ar = TokenLevelReconstructor(
-        encoder_name=cfg["training"].get("encoder_name", "distilbert-base-uncased"),
-        output_dim=sample_dim,
-        hidden_dim=cfg["training"]["hidden_dim"],
+        hidden_dim=hidden_dim,
+        n_layers=cfg["training"]["decoder_layers"],
+        n_heads=cfg["training"]["decoder_heads"],
+        max_len=cfg["activation"]["max_length"],
+        encoder_name=cfg["training"].get("encoder_name", "distilgpt2"),
     ).to(device)
     ar.load_state_dict(torch.load(checkpoint, map_location=device))
     ar.eval()
 
     # ------------------------------------------------------------------
-    # Evaluation loop — 4-condition table
+    # Evaluation loop
     # ------------------------------------------------------------------
     num_eval = min(cfg["evaluation"]["num_eval_samples"], len(dataset))
     samples = dataset.samples[:num_eval]
@@ -124,8 +121,8 @@ def main():
         "random":        {"kl_divergence": [], "topk_overlap": [], "logit_cosine": []},
         "zero":          {"kl_divergence": [], "topk_overlap": [], "logit_cosine": []},
     }
-    ppl_shifts = []
-    interpolation_samples = []
+    ppl_shifts: List[float] = []
+    interpolation_samples: List[Dict] = []
 
     print(f"\n[INFO] Evaluating {num_eval} samples (4-condition table)...")
 
@@ -133,14 +130,32 @@ def main():
         text = item["text"]
         description = item["description"]
 
-        with torch.no_grad():
-            reconstructed = ar([description], device)
+        # Tokenize the original text to get its actual seq_len for reconstruction
+        toks = tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            max_length=max_length,
+        )
+        original_seq_len = toks["input_ids"].shape[1]
 
+        # Reconstruct [1, original_seq_len, hidden_dim]
+        with torch.no_grad():
+            recon_seq = ar(
+                [description],
+                seq_len=original_seq_len,
+                device=device,
+            )   # [1, seq_len, hidden_dim]
+
+        # Squeeze batch dim for patcher: [seq_len, hidden_dim]
+        recon_seq_2d = recon_seq.squeeze(0)
+
+        # 4-condition table — uses SequenceInterpolationPatcher internally
         result = evaluate_all_conditions_sequence(
             model=lm,
             tokenizer=tokenizer,
             text=text,
-            reconstructed=reconstructed,
+            reconstructed_sequence=recon_seq_2d,   # correct kwarg name
             layer_idx=layer_idx,
             device=device,
             topk=topk,
@@ -151,21 +166,31 @@ def main():
             for metric, val in result[cond].items():
                 cond_metrics[cond][metric].append(val)
 
+        # Perplexity shift
         if cfg["evaluation"].get("perplexity_shift", False):
             ppl_ratio = perplexity_shift(
                 model=lm,
                 tokenizer=tokenizer,
                 text=text,
-                patch_vector=reconstructed,
+                patch_tensor=recon_seq_2d,   # correct kwarg name
                 layer_idx=layer_idx,
                 device=device,
                 max_length=max_length,
+                sequence_mode=True,
             )
             ppl_shifts.append(ppl_ratio)
 
+        # Collect for interpolation sweep
         interp_cfg = cfg["evaluation"].get("interpolation", {})
-        if interp_cfg.get("enabled") and len(interpolation_samples) < interp_cfg.get("num_pairs", 50):
-            interpolation_samples.append({"text": text, "reconstructed": reconstructed})
+        if (
+            interp_cfg.get("enabled")
+            and len(interpolation_samples) < interp_cfg.get("num_pairs", 50)
+        ):
+            # run_interpolation_sweep_sequence expects key "reconstructed_sequence"
+            interpolation_samples.append({
+                "text": text,
+                "reconstructed_sequence": recon_seq_2d,
+            })
 
     # ------------------------------------------------------------------
     # Aggregate 4-condition metrics
@@ -181,17 +206,20 @@ def main():
         results["reconstructed/perplexity_shift_std"] = _std(ppl_shifts)
 
     # ------------------------------------------------------------------
-    # Interpolation sweep
+    # Interpolation sweep (sequence mode)
     # ------------------------------------------------------------------
     interp_results = {}
     interp_cfg = cfg["evaluation"].get("interpolation", {})
     if interp_cfg.get("enabled") and interpolation_samples:
-        alphas = interp_cfg.get("alphas", [0.0, 0.25, 0.5, 0.75, 1.0])
-        print(f"\n[INFO] Running interpolation sweep over {len(interpolation_samples)} samples...")
-        interp_results = run_interpolation_sweep(
+        alphas = interp_cfg.get("alphas", [0.0, 0.1, 0.25, 0.5, 0.75, 1.0])
+        print(
+            f"\n[INFO] Running interpolation sweep over "
+            f"{len(interpolation_samples)} samples..."
+        )
+        interp_results = run_interpolation_sweep_sequence(
             model=lm,
             tokenizer=tokenizer,
-            samples=interpolation_samples,
+            samples=interpolation_samples,   # each has "reconstructed_sequence"
             alphas=alphas,
             layer_idx=layer_idx,
             device=device,
@@ -226,20 +254,23 @@ def main():
         print(f"  {'alpha':>6}  {'KL':>10}  {'top-k':>10}")
         for alpha in sorted(interp_results):
             r = interp_results[alpha]
-            print(f"  {alpha:>6.2f}  {r['kl_divergence_mean']:>10.4f}  {r['topk_overlap_mean']:>10.4f}")
+            print(
+                f"  {alpha:>6.2f}  "
+                f"{r['kl_divergence_mean']:>10.4f}  "
+                f"{r['topk_overlap_mean']:>10.4f}"
+            )
 
     print()
 
     # ------------------------------------------------------------------
-    # Save
+    # Save artifacts
     # ------------------------------------------------------------------
     with open(save_dir / "metrics.json", "w") as f:
         json.dump(results, f, indent=2)
 
     if interp_results:
-        serializable = {str(k): v for k, v in interp_results.items()}
         with open(save_dir / "interpolation.json", "w") as f:
-            json.dump(serializable, f, indent=2)
+            json.dump({str(k): v for k, v in interp_results.items()}, f, indent=2)
 
     # ------------------------------------------------------------------
     # WandB

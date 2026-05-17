@@ -33,7 +33,7 @@ class WandbTracker:
         run_name: str,
         config: Dict[str, Any],
         #mode: str = "online",
-        mode: str = "offline",
+        mode: str = "disabled",
     ):
         self.run = wandb.init(
             project=project,
