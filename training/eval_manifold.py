@@ -54,7 +54,9 @@ from nla.utils import (
     set_seed,
 )
 
-
+import dotenv
+dotenv.load_dotenv()
+print("Environment variables loaded from .env")
 # ============================================================
 # Helpers
 # ============================================================
@@ -312,7 +314,7 @@ def evaluate_manifold() -> Dict:
 
         model = TokenLevelReconstructor(
             hidden_dim=hidden_dim,
-            max_seq_len=max_seq_len,
+            max_len=max_seq_len,
             n_layers=cfg["training"]["decoder_layers"],
             n_heads=cfg["training"]["decoder_heads"],
             encoder_name=cfg["training"].get(
@@ -339,6 +341,7 @@ def evaluate_manifold() -> Dict:
     state = torch.load(
         checkpoint_path,
         map_location=device,
+        
 
     )
 

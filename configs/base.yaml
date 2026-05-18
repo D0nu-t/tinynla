@@ -40,7 +40,7 @@ activation:
   normalize: true
 
 dataset:
-  num_samples: 10000
+  num_samples: 5000
   source: "roneneldan/TinyStories"
   max_text_chars: 256
   output_dir: "activation_data/activation_buffer"
@@ -49,7 +49,7 @@ dataset:
 training:
   batch_size: 8          # sequence tensors are [seq_len, 768]; 8 fits 4 GB
   lr: 0.0001
-  epochs: 2
+  epochs: 1
   hidden_dim: 2048       # kept for legacy pooled_mlp compatibility
   save_dir: "checkpoints/ar"
   grad_clip: 1.0
