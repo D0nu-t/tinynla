@@ -332,6 +332,7 @@ def evaluate_manifold() -> Dict:
     state = torch.load(
         checkpoint_path,
         map_location=device,
+        
     )
 
     model.load_state_dict(
