@@ -282,7 +282,8 @@ def evaluate_manifold() -> Dict:
     )
 
     dataset = SequenceActivationDataset(
-        dataset_path
+        dataset_path,
+        
     )
 
     loader = DataLoader(
@@ -290,7 +291,7 @@ def evaluate_manifold() -> Dict:
         batch_size=cfg["training"][
             "batch_size"
         ],
-        shuffle=False,
+        shuffle=False
     )
 
     reconstructor_type = cfg[
@@ -307,11 +308,17 @@ def evaluate_manifold() -> Dict:
         128,
     )
 
-    if reconstructor_type == "token":
+    if reconstructor_type == "token_decoder":
 
         model = TokenLevelReconstructor(
             hidden_dim=hidden_dim,
             max_seq_len=max_seq_len,
+            n_layers=cfg["training"]["decoder_layers"],
+            n_heads=cfg["training"]["decoder_heads"],
+            encoder_name=cfg["training"].get(
+                "encoder_name",
+                "distilgpt2",
+            )
         )
 
     else:
@@ -332,7 +339,7 @@ def evaluate_manifold() -> Dict:
     state = torch.load(
         checkpoint_path,
         map_location=device,
-        
+
     )
 
     model.load_state_dict(
@@ -356,7 +363,7 @@ def evaluate_manifold() -> Dict:
         ]
 
         target = batch[
-            "activation"
+            "activation_sequence"
         ].to(device)
 
         pred = model(
