@@ -125,7 +125,15 @@ Run-Step `
 Run-Step `
     "[3/4] Evaluating reconstruction quality" `
     "python -m training.eval_patch"
+    Write-Host ""
+    Write-Host "[3.5/4] Evaluating manifold fidelity"
 
+    "python -m training.eval_manifold"
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[ERROR] Manifold evaluation failed."
+        exit 1
+}
 # ==========================================================
 # STEP 4 — FUNCTIONAL EVAL
 # ==========================================================

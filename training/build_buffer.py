@@ -36,7 +36,7 @@ def build_buffer(cfg: dict) -> None:
         normalize=cfg["activation"]["normalize"],
     )
 
-    labeler = SemanticLabeler()
+    labeler = SemanticLabeler(use_local_model=True)
 
     dataset = load_dataset(
         cfg["dataset"]["source"],
@@ -68,6 +68,7 @@ def build_buffer(cfg: dict) -> None:
             activation_sequence = extractor.extract_sequence(text)
 
             description = labeler.describe(text)
+            #description = text
 
             samples.append(
                 {
