@@ -223,7 +223,7 @@ Summary:"""
 
     def __init__(
         self,
-        use_local_model: bool = False,
+        use_local_model: bool = True,
         model_name: str = "Qwen/Qwen2.5-0.5B-Instruct",
         max_new_tokens: int = 24,
         cache_path: str = "datasets/label_cache.json",
@@ -270,12 +270,16 @@ Summary:"""
         if self.use_local_model:
             try:
                 label = self._model_describe(text)
+                print("Model Name:", self.model_name)
+                print("Using model-based description.","Model output:", label)
             except Exception:
+                print("Model description failed, falling back to rule-based.")
                 label = self._rule_based_describe(
                     text,
                     max_domains=max_domains,
                 )
         else:
+            print("Using rule-based description.")
             label = self._rule_based_describe(
                 text,
                 max_domains=max_domains,

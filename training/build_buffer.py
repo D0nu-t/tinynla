@@ -117,6 +117,7 @@ def build_buffer(cfg: dict) -> None:
     # Semantic labeler
     # ------------------------------------------------------------------
     labeler = SemanticLabeler(use_local_model=True)
+    print("labeler initialized with model:", labeler.model_name)
 
     # ------------------------------------------------------------------
     # Dataset

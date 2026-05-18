@@ -42,7 +42,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader
-
+from nla.dataset import SequenceActivationDataset
 from nla.dataset import ActivationDataset
 from nla.reconstructor import (
     ActivationReconstructor,
@@ -263,25 +263,25 @@ def evaluate_manifold() -> Dict:
 
     cfg = load_config()
 
-    set_seed(cfg["seed"])
+    set_seed(cfg["experiment"]["seed"])
 
     device = resolve_device(
         cfg["device"]
     )
 
     dataset_path = Path(
-        cfg["dataset"]["save_dir"]
+        cfg["dataset"]["output_dir"]
     ) / "buffer.pt"
 
     checkpoint_dir = Path(
-        cfg["training"]["checkpoint_dir"]
+        cfg["training"]["save_dir"]
     )
 
     print(
         f"[INFO] Loading dataset from {dataset_path}"
     )
 
-    dataset = ActivationDataset(
+    dataset = SequenceActivationDataset(
         dataset_path
     )
 
@@ -294,18 +294,16 @@ def evaluate_manifold() -> Dict:
     )
 
     reconstructor_type = cfg[
-        "model"
+        "training"
     ].get(
-        "reconstructor_type",
-        "pooled",
-    )
+        "reconstructor_type"  )
 
-    hidden_dim = cfg["model"][
+    hidden_dim = cfg["training"][
         "hidden_dim"
     ]
 
-    max_seq_len = cfg["model"].get(
-        "max_seq_len",
+    max_seq_len = cfg["activation"].get(
+        "max_length",
         128,
     )
 
