@@ -1,61 +1,76 @@
 """
 nla/reconstructor.py
 
-Activation reconstruction models.
+Phase 1/2/3 upgraded reconstruction stack.
 
-TokenLevelReconstructor  — distilgpt2 (causal) encoder + TransformerDecoder
-                           Produces [batch, seq_len, hidden_dim].
-                           v3 default; causal encoder matches GPT-2's inductive bias.
+Primary architecture:
+  TokenLevelReconstructor
+    - frozen causal text encoder (distilgpt2 by default)
+    - learned trajectory queries
+    - causal TransformerDecoder
+    - sequence output [batch, seq_len, hidden_dim]
 
-ActivationReconstructor  — DistilBERT (bidirectional) encoder + MLP
-                           Produces [batch, hidden_dim].
-                           Legacy pooled baseline; retained for ablation.
+Major upgrades:
+  - proper padding-aware encoder attention masking
+  - causal target masking in decoder
+  - learned query scaling stabilization
+  - optional output normalization
+  - safer max_len handling
+  - mixed-length robustness
+  - deterministic sequence generation
+  - trajectory-level compatible decoding
 
-Key design decisions:
-  - distilgpt2 has no pad token; we set pad=eos (standard GPT-family practice).
-  - The causal encoder is frozen during training; gradients flow only through
-    the TransformerDecoder and output_proj.
-  - TokenLevelReconstructor.forward() requires seq_len so it can generate
-    exactly as many positions as the original text has tokens.
+Legacy baseline retained:
+  ActivationReconstructor
 """
+
+from typing import List, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List
 
 from transformers import AutoModel, AutoTokenizer
 
 
-# ===========================================================================
-# v3 Primary: distilgpt2 (causal) + TransformerDecoder
-# ===========================================================================
+# ============================================================================
+# Utilities
+# ============================================================================
+
+def build_causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    """
+    Standard autoregressive causal mask.
+
+    Shape:
+        [seq_len, seq_len]
+
+    True values are masked positions for nn.TransformerDecoder.
+    """
+    return torch.triu(
+        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+        diagonal=1,
+    )
+
+
+# ============================================================================
+# v3 Primary Model
+# ============================================================================
 
 class TokenLevelReconstructor(nn.Module):
     """
-    Text description -> token-level activation sequence.
+    Description -> activation trajectory reconstructor.
 
     Architecture:
         description
-          -> distilgpt2 encoder (frozen, causal, left-to-right)
-          -> hidden states [desc_seq_len, 768]  as cross-attention memory
-          -> learned positional queries [target_seq_len, 768]
-          -> TransformerDecoder
-          -> linear projection
-          -> [target_seq_len, hidden_dim]
+            -> frozen causal encoder
+            -> encoder hidden states as memory
+            -> learned trajectory queries
+            -> causal TransformerDecoder
+            -> projection head
+            -> activation trajectory
 
-    Why distilgpt2 over DistilBERT:
-        GPT-2 residual streams encode only the causal prefix at each position.
-        A bidirectional encoder (DistilBERT) integrates full-sequence context
-        symmetrically, which is geometrically incompatible with that structure.
-        distilgpt2 shares GPT-2's left-to-right inductive bias and embedding space.
-
-    Args:
-        hidden_dim:    Target activation dimension (768 for GPT-2).
-        n_layers:      TransformerDecoder layer count.
-        n_heads:       Attention heads (embed_dim must be divisible by n_heads).
-        max_len:       Maximum target seq_len (>= activation.max_length in config).
-        encoder_name:  Causal encoder. Default "distilgpt2" (768-dim, 6 layers).
+    Output:
+        [batch, seq_len, hidden_dim]
     """
 
     def __init__(
@@ -65,57 +80,107 @@ class TokenLevelReconstructor(nn.Module):
         n_heads: int = 8,
         max_len: int = 64,
         encoder_name: str = "distilgpt2",
+        dropout: float = 0.1,
+        normalize_output: bool = False,
     ):
         super().__init__()
+
+        self.hidden_dim = hidden_dim
+        self.max_len = max_len
+        self.normalize_output = normalize_output
+
+        # ------------------------------------------------------------------
+        # Frozen causal encoder
+        # ------------------------------------------------------------------
 
         self.tokenizer = AutoTokenizer.from_pretrained(encoder_name)
         self.encoder = AutoModel.from_pretrained(encoder_name)
 
-        # distilgpt2 has no pad token by default — use eos as pad.
-        # This is standard practice for GPT-family models used as encoders.
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.encoder.config.pad_token_id = self.tokenizer.eos_token_id
 
-        embed_dim = self.encoder.config.hidden_size    # 768 for distilgpt2
+        encoder_dim = self.encoder.config.hidden_size
+
+        # Freeze encoder
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+        self.encoder.eval()
+
+        # ------------------------------------------------------------------
+        # Decoder
+        # ------------------------------------------------------------------
 
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=embed_dim,
+            d_model=encoder_dim,
             nhead=n_heads,
+            dim_feedforward=encoder_dim * 4,
+            dropout=dropout,
+            activation="gelu",
             batch_first=True,
-            dim_feedforward=embed_dim * 4,
-            dropout=0.1,
+            norm_first=True,
         )
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=n_layers)
 
-        # Learned positional queries — one per target position.
-        # Small init keeps early outputs close to zero, avoiding gradient spikes.
+        self.decoder = nn.TransformerDecoder(
+            decoder_layer,
+            num_layers=n_layers,
+        )
+
+        # ------------------------------------------------------------------
+        # Learned trajectory queries
+        # ------------------------------------------------------------------
+
         self.positional_queries = nn.Parameter(
-            torch.randn(1, max_len, embed_dim) * 0.02
+            torch.randn(1, max_len, encoder_dim) * 0.02
         )
 
-        self.output_proj = nn.Linear(embed_dim, hidden_dim)
-        self.max_len = max_len
+        self.query_scale = nn.Parameter(torch.tensor(1.0))
 
-    def encode_text(self, texts: List[str], device: str) -> torch.Tensor:
+        # ------------------------------------------------------------------
+        # Output projection
+        # ------------------------------------------------------------------
+
+        self.output_proj = nn.Sequential(
+            nn.LayerNorm(encoder_dim),
+            nn.Linear(encoder_dim, hidden_dim),
+        )
+
+    # ======================================================================
+    # Encoder
+    # ======================================================================
+
+    def encode_text(
+        self,
+        texts: List[str],
+        device: str,
+    ):
         """
-        Encode descriptions through the frozen causal encoder.
+        Encode descriptions into contextual memory states.
 
         Returns:
-            [batch, desc_seq_len, embed_dim]  used as cross-attention memory.
+            memory:         [batch, desc_seq_len, encoder_dim]
+            attention_mask: [batch, desc_seq_len]
         """
+
         toks = self.tokenizer(
             texts,
+            return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=self.max_len,
-            return_tensors="pt",
         ).to(device)
 
         with torch.no_grad():
             out = self.encoder(**toks)
 
-        return out.last_hidden_state    # [batch, desc_seq, embed_dim]
+        memory = out.last_hidden_state
+
+        return memory, toks["attention_mask"]
+
+    # ======================================================================
+    # Forward
+    # ======================================================================
 
     def forward(
         self,
@@ -124,57 +189,100 @@ class TokenLevelReconstructor(nn.Module):
         device: str,
     ) -> torch.Tensor:
         """
-        Reconstruct a token-level activation trajectory.
+        Generate activation trajectories.
 
         Args:
-            texts:   Description strings, one per sample in batch.
-            seq_len: Number of target positions to generate.
-                     Pass the actual tokenized length of the original text
-                     so the reconstructed trajectory has the right shape for patching.
-            device:  Torch device string.
+            texts:
+                Description strings.
+
+            seq_len:
+                Number of trajectory positions to generate.
+
+            device:
+                Torch device string.
 
         Returns:
-            [batch, seq_len, hidden_dim]
+            Tensor:
+                [batch, seq_len, hidden_dim]
         """
-        memory = self.encode_text(texts, device)    # [batch, desc_seq, embed_dim]
-        B = memory.shape[0]
 
-        seq_len = min(seq_len, self.max_len)
-        queries = self.positional_queries[:, :seq_len].expand(B, -1, -1)
+        seq_len = int(min(seq_len, self.max_len))
 
-        decoded = self.decoder(tgt=queries, memory=memory)
-        return self.output_proj(decoded)            # [batch, seq_len, hidden_dim]
+        memory, memory_attention_mask = self.encode_text(texts, device)
 
-    def forward_pooled(self, texts: List[str], device: str) -> torch.Tensor:
+        batch_size = memory.shape[0]
+
+        # ------------------------------------------------------------------
+        # Learned target queries
+        # ------------------------------------------------------------------
+
+        queries = self.positional_queries[:, :seq_len]
+        queries = queries.expand(batch_size, -1, -1)
+
+        queries = queries * self.query_scale
+
+        # ------------------------------------------------------------------
+        # Causal decoding mask
+        # ------------------------------------------------------------------
+
+        tgt_mask = build_causal_mask(
+            seq_len=seq_len,
+            device=memory.device,
+        )
+
+        # memory_key_padding_mask expects True at PAD positions
+        memory_key_padding_mask = ~memory_attention_mask.bool()
+
+        decoded = self.decoder(
+            tgt=queries,
+            memory=memory,
+            tgt_mask=tgt_mask,
+            memory_key_padding_mask=memory_key_padding_mask,
+        )
+
+        out = self.output_proj(decoded)
+
+        if self.normalize_output:
+            out = F.normalize(out, dim=-1)
+
+        return out
+
+    # ======================================================================
+    # Pooled compatibility path
+    # ======================================================================
+
+    def forward_pooled(
+        self,
+        texts: List[str],
+        device: str,
+    ) -> torch.Tensor:
         """
-        Generate max_len positions then mean-pool to a single vector.
-        Allows TokenLevelReconstructor to be dropped into pooled-mode eval pipelines.
+        Compatibility mode for pooled legacy evaluation.
 
         Returns:
-            [batch, hidden_dim]  L2-normalized.
+            [batch, hidden_dim]
         """
-        seq = self.forward(texts, self.max_len, device)
-        return F.normalize(seq.mean(dim=1), dim=-1)
+
+        seq = self.forward(
+            texts=texts,
+            seq_len=self.max_len,
+            device=device,
+        )
+
+        pooled = seq.mean(dim=1)
+
+        return F.normalize(pooled, dim=-1)
 
 
-# ===========================================================================
-# Legacy: DistilBERT (bidirectional) + MLP
-# ===========================================================================
+# ============================================================================
+# Legacy pooled baseline
+# ============================================================================
 
 class ActivationReconstructor(nn.Module):
     """
-    Text -> pooled activation vector.
+    Legacy pooled reconstruction baseline.
 
-    Architecture:
-        text -> DistilBERT -> mean pool -> MLP -> L2-normalize -> [hidden_dim]
-
-    Legacy baseline. DistilBERT's bidirectional attention is geometrically
-    incompatible with GPT-2's causal residual streams. Retained for ablation.
-
-    Args:
-        encoder_name:  HuggingFace encoder identifier.
-        output_dim:    Target hidden dimension (768 for GPT-2).
-        hidden_dim:    MLP intermediate dimension.
+    Retained for ablation comparisons.
     """
 
     def __init__(
@@ -197,7 +305,12 @@ class ActivationReconstructor(nn.Module):
             nn.Linear(hidden_dim, output_dim),
         )
 
-    def encode_text(self, texts: List[str], device: str) -> torch.Tensor:
+    def encode_text(
+        self,
+        texts: List[str],
+        device: str,
+    ) -> torch.Tensor:
+
         toks = self.tokenizer(
             texts,
             return_tensors="pt",
@@ -205,8 +318,32 @@ class ActivationReconstructor(nn.Module):
             truncation=True,
             max_length=64,
         ).to(device)
-        return self.encoder(**toks).last_hidden_state.mean(dim=1)
 
-    def forward(self, texts: List[str], device: str) -> torch.Tensor:
-        """Returns L2-normalized vectors: [batch, output_dim]"""
-        return F.normalize(self.projector(self.encode_text(texts, device)), dim=-1)
+        out = self.encoder(**toks)
+
+        hidden = out.last_hidden_state
+
+        attention_mask = toks["attention_mask"].unsqueeze(-1)
+
+        masked_hidden = hidden * attention_mask
+
+        pooled = masked_hidden.sum(dim=1)
+        pooled = pooled / attention_mask.sum(dim=1).clamp(min=1)
+
+        return pooled
+
+    def forward(
+        self,
+        texts: List[str],
+        device: str,
+    ) -> torch.Tensor:
+        """
+        Returns:
+            [batch, output_dim]
+        """
+
+        encoded = self.encode_text(texts, device)
+
+        projected = self.projector(encoded)
+
+        return F.normalize(projected, dim=-1)

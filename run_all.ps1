@@ -8,8 +8,9 @@
 # -------
 #   1. Build activation buffer
 #   2. Train activation reconstructor
-#   3. Evaluate reconstruction quality
-#   4. Run functional activation patching evaluation
+#   3. Geometric reconstruction evaluation
+#   3.5. Manifold fidelity evaluation
+#   4. Functional activation patching evaluation
 #
 # Optional Modes
 # --------------
@@ -43,7 +44,9 @@ function Print-Header($msg) {
 function Run-Step($stepName, $command) {
 
     Write-Host ""
+    Write-Host "--------------------------------------------------"
     Write-Host $stepName
+    Write-Host "--------------------------------------------------"
     Write-Host ""
 
     Invoke-Expression $command
@@ -107,7 +110,7 @@ if ($Sweep) {
 # ==========================================================
 
 Run-Step `
-    "[1/4] Building activation buffer" `
+    "[1/5] Building activation buffer" `
     "python -m training.build_buffer"
 
 # ==========================================================
@@ -115,31 +118,31 @@ Run-Step `
 # ==========================================================
 
 Run-Step `
-    "[2/4] Training activation reconstructor" `
+    "[2/5] Training activation reconstructor" `
     "python -m training.train_ar"
 
 # ==========================================================
-# STEP 3 — RECONSTRUCTION EVAL
+# STEP 3 — GEOMETRIC RECONSTRUCTION EVAL
 # ==========================================================
 
 Run-Step `
-    "[3/4] Evaluating reconstruction quality" `
+    "[3/5] Evaluating reconstruction quality" `
     "python -m training.eval_patch"
-    Write-Host ""
-    Write-Host "[3.5/4] Evaluating manifold fidelity"
 
+# ==========================================================
+# STEP 3.5 — MANIFOLD FIDELITY EVAL
+# ==========================================================
+
+Run-Step `
+    "[4/5] Evaluating manifold fidelity" `
     "python -m training.eval_manifold"
 
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "[ERROR] Manifold evaluation failed."
-        exit 1
-}
 # ==========================================================
 # STEP 4 — FUNCTIONAL EVAL
 # ==========================================================
 
 Run-Step `
-    "[4/4] Running functional activation evaluation" `
+    "[5/5] Running functional activation evaluation" `
     "python -m training.eval_functional"
 
 # ==========================================================
@@ -153,15 +156,19 @@ Write-Host "---------"
 Write-Host ""
 
 Write-Host "Dataset"
-Write-Host "  datasets/activation_buffer/buffer.pt"
+Write-Host "  activation_data/activation_buffer/buffer.pt"
 Write-Host ""
 
 Write-Host "Checkpoint"
-Write-Host "  checkpoints/ar/model.pt"
+Write-Host "  checkpoints/ar/best_model.pt"
 Write-Host ""
 
 Write-Host "Metrics"
 Write-Host "  checkpoints/ar/metrics.json"
+Write-Host ""
+
+Write-Host "Interpolation"
+Write-Host "  checkpoints/ar/interpolation.json"
 Write-Host ""
 
 # ==========================================================
@@ -173,7 +180,7 @@ Write-Host "--------"
 
 if ($env:WANDB_API_KEY) {
 
-    Write-Host "W&B logging enabled"
+    Write-Host "W&B logging available"
 }
 else {
 
@@ -197,16 +204,17 @@ Write-Host ""
 Write-Host "2. Compare semantic recoverability by depth"
 Write-Host ""
 
-Write-Host "3. Add interpolation experiments"
+Write-Host "3. Analyze interpolation curves"
 Write-Host ""
 
-Write-Host "4. Add perplexity-shift evaluation"
+Write-Host "4. Compare manifold geometry across layers"
 Write-Host ""
 
-Write-Host "5. Upgrade AR architecture"
-Write-Host "     - residual MLP"
-Write-Host "     - transformer decoder"
-Write-Host "     - diffusion latent model"
+Write-Host "5. Upgrade reconstruction architecture"
+Write-Host "     - deeper transformer decoder"
+Write-Host "     - rotary positional embeddings"
+Write-Host "     - latent bottleneck"
+Write-Host "     - diffusion reconstruction"
 Write-Host ""
 
 # ==========================================================
