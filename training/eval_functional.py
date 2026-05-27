@@ -67,7 +67,7 @@ from nla.evaluation import (
     run_interpolation_sweep_sequence,
 )
 from nla.metrics import (
-    mean_cosine_similarity,
+    cosine_similarity_metric,
     manifold_offmanifold_ratio,
 )
 from nla.reconstructor import TokenLevelReconstructor
@@ -337,12 +337,17 @@ def main():
         # Manifold metrics
         # --------------------------------------------------------------
 
+        # pooled representation for manifold diagnostics
         manifold_original.append(
-            original_flat
+            original_sequence[:seq_len]
+            .mean(dim=0)
+            .cpu()
         )
 
         manifold_reconstructed.append(
-            recon_flat
+            recon_sequence[:seq_len]
+            .mean(dim=0)
+            .cpu()
         )
 
         # --------------------------------------------------------------
@@ -416,7 +421,7 @@ def main():
     )
 
     manifold_metrics = {
-        "mean_cosine_similarity": mean_cosine_similarity(
+        "mean_cosine_similarity": cosine_similarity_metric(
             manifold_original_tensor,
             manifold_reconstructed_tensor,
         ),

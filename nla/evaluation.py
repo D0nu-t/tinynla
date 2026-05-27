@@ -532,6 +532,7 @@ def run_interpolation_sweep_sequence(
             "trajectory_cosine": [],
             "trajectory_drift": [],
             "norm_difference": [],
+            "trajectory_mse": [],
         }
         for alpha in alphas
     }
@@ -571,6 +572,7 @@ def run_interpolation_sweep_sequence(
                 device=device,
                 max_length=max_length,
                 alpha=alpha,
+                
             )
 
             merged = {

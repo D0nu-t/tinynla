@@ -1,25 +1,20 @@
 """
 training/eval_manifold.py
 
-Evaluate whether reconstructed activations lie on the natural
-activation manifold of the target model.
+Stage 4: Manifold fidelity evaluation.
 
-This is the primary diagnostic for:
-
-1. Reconstruction manifold fidelity
-2. Patching stability prediction
-3. Detecting off-manifold collapse
-4. Comparing pooled vs sequence reconstruction
+Measures whether reconstructed activation trajectories lie on the natural
+manifold of the target model's residual stream.
 
 Metrics
 -------
-- cosine similarity
-- euclidean distance
-- nearest-neighbor overlap
-- kNN manifold consistency
-- local density ratio
-- centroid distance
-- PCA explained reconstruction quality
+cosine_similarity       — mean cosine between original and reconstructed
+euclidean_distance      — mean L2 distance
+knn_overlap             — fraction of shared k-nearest neighbours
+manifold_consistency    — how well reconstructed vectors fit local neighbourhoods
+local_density_ratio     — density preservation (1.0 = natural manifold)
+centroid_distance       — global centroid shift
+pca_projection_error    — deviation from principal activation subspace
 
 Outputs
 -------
@@ -42,37 +37,25 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 from torch.utils.data import DataLoader
-from nla.dataset import SequenceActivationDataset
-from nla.dataset import ActivationDataset
-from nla.reconstructor import (
-    ActivationReconstructor,
-    TokenLevelReconstructor,
-)
-from nla.utils import (
-    load_config,
-    resolve_device,
-    set_seed,
-)
 
 import dotenv
 dotenv.load_dotenv()
 print("Environment variables loaded from .env")
-# ============================================================
-# Helpers
-# ============================================================
+
+from nla.dataset import SequenceActivationDataset, sequence_collate
+from nla.reconstructor import TokenLevelReconstructor
+from nla.utils import load_config, resolve_device, set_seed
 
 
-def cosine_similarity(
-    x: torch.Tensor,
-    y: torch.Tensor,
-) -> float:
+# ============================================================================
+# Manifold metrics
+# ============================================================================
+
+def cosine_similarity(x: torch.Tensor, y: torch.Tensor) -> float:
     return F.cosine_similarity(x, y, dim=-1).mean().item()
 
 
-def euclidean_distance(
-    x: torch.Tensor,
-    y: torch.Tensor,
-) -> float:
+def euclidean_distance(x: torch.Tensor, y: torch.Tensor) -> float:
     return torch.norm(x - y, dim=-1).mean().item()
 
 
@@ -81,37 +64,16 @@ def compute_knn_overlap(
     reconstructed: np.ndarray,
     k: int = 10,
 ) -> float:
-    """
-    Fraction of shared nearest neighbors.
-
-    Higher = reconstructed vector lies in
-    same neighborhood of latent space.
-    """
-
-    nn = NearestNeighbors(
-        n_neighbors=k + 1,
-        metric="cosine",
-    )
-
+    nn = NearestNeighbors(n_neighbors=k + 1, metric="cosine")
     nn.fit(original)
 
-    orig_idx = nn.kneighbors(
-        original,
-        return_distance=False,
-    )[:, 1:]
+    orig_idx = nn.kneighbors(original, return_distance=False)[:, 1:]
+    recon_idx = nn.kneighbors(reconstructed, return_distance=False)[:, 1:]
 
-    recon_idx = nn.kneighbors(
-        reconstructed,
-        return_distance=False,
-    )[:, 1:]
-
-    overlap = []
-
-    for o, r in zip(orig_idx, recon_idx):
-        overlap.append(
-            len(set(o) & set(r)) / k
-        )
-
+    overlap = [
+        len(set(o) & set(r)) / k
+        for o, r in zip(orig_idx, recon_idx)
+    ]
     return float(np.mean(overlap))
 
 
@@ -120,44 +82,18 @@ def manifold_consistency(
     reconstructed: np.ndarray,
     k: int = 10,
 ) -> float:
-    """
-    Measures whether reconstructed activations
-    remain inside local manifold neighborhoods.
-
-    For each reconstructed vector:
-        find kNN in original manifold
-
-    Then compare to source neighborhood.
-    """
-
-    nn = NearestNeighbors(
-        n_neighbors=k,
-        metric="cosine",
-    )
-
+    nn = NearestNeighbors(n_neighbors=k, metric="cosine")
     nn.fit(original)
+    _, indices = nn.kneighbors(reconstructed)
 
-    _, indices = nn.kneighbors(
-        reconstructed
-    )
-
-    consistency_scores = []
-
+    scores = []
     for i, nbrs in enumerate(indices):
         local_centroid = original[nbrs].mean(axis=0)
+        denom = np.linalg.norm(reconstructed[i]) * np.linalg.norm(local_centroid) + 1e-8
+        sim = (reconstructed[i] @ local_centroid) / denom
+        scores.append(sim)
 
-        sim = (
-            reconstructed[i]
-            @ local_centroid
-        ) / (
-            np.linalg.norm(reconstructed[i])
-            * np.linalg.norm(local_centroid)
-            + 1e-8
-        )
-
-        consistency_scores.append(sim)
-
-    return float(np.mean(consistency_scores))
+    return float(np.mean(scores))
 
 
 def local_density_ratio(
@@ -165,24 +101,7 @@ def local_density_ratio(
     reconstructed: np.ndarray,
     k: int = 10,
 ) -> float:
-    """
-    Compare local density around points.
-
-    ratio ≈ 1
-        natural manifold density
-
-    ratio << 1
-        sparse / collapsed
-
-    ratio >> 1
-        overcompressed cluster
-    """
-
-    nn = NearestNeighbors(
-        n_neighbors=k,
-        metric="euclidean",
-    )
-
+    nn = NearestNeighbors(n_neighbors=k, metric="euclidean")
     nn.fit(original)
 
     d_orig, _ = nn.kneighbors(original)
@@ -191,29 +110,11 @@ def local_density_ratio(
     density_orig = np.mean(d_orig[:, 1:])
     density_recon = np.mean(d_recon[:, 1:])
 
-    return float(
-        density_orig
-        / (density_recon + 1e-8)
-    )
+    return float(density_orig / (density_recon + 1e-8))
 
 
-def centroid_distance(
-    original: np.ndarray,
-    reconstructed: np.ndarray,
-) -> float:
-    """
-    Distance between global centroids.
-    """
-
-    orig_centroid = original.mean(axis=0)
-    recon_centroid = reconstructed.mean(axis=0)
-
-    return float(
-        np.linalg.norm(
-            orig_centroid
-            - recon_centroid
-        )
-    )
+def centroid_distance(original: np.ndarray, reconstructed: np.ndarray) -> float:
+    return float(np.linalg.norm(original.mean(axis=0) - reconstructed.mean(axis=0)))
 
 
 def pca_manifold_score(
@@ -221,268 +122,126 @@ def pca_manifold_score(
     reconstructed: np.ndarray,
     n_components: int = 32,
 ) -> float:
-    """
-    Measures whether reconstructed activations
-    remain inside principal manifold subspace.
-
-    Higher explained variance retained
-    = better geometric faithfulness.
-    """
-
-    n_components = min(
-        n_components,
-        original.shape[1],
-        len(original) - 1,
-    )
-
-    pca = PCA(
-        n_components=n_components
-    )
-
+    n_components = min(n_components, original.shape[1], len(original) - 1)
+    pca = PCA(n_components=n_components)
     pca.fit(original)
 
-    projected = pca.inverse_transform(
-        pca.transform(reconstructed)
-    )
-
-    error = np.mean(
-        np.linalg.norm(
-            reconstructed - projected,
-            axis=-1,
-        )
-    )
-
+    projected = pca.inverse_transform(pca.transform(reconstructed))
+    error = np.mean(np.linalg.norm(reconstructed - projected, axis=-1))
     return float(error)
 
 
-# ============================================================
-# Main Evaluation
-# ============================================================
-
+# ============================================================================
+# Main
+# ============================================================================
 
 @torch.no_grad()
 def evaluate_manifold() -> Dict:
-
     cfg = load_config()
-
     set_seed(cfg["experiment"]["seed"])
+    device = resolve_device(cfg)
 
-    device = resolve_device(
-        cfg["device"]
-    )
+    dataset_path = Path(cfg["dataset"]["output_dir"]) / "buffer.pt"
+    checkpoint_dir = Path(cfg["training"]["save_dir"])
 
-    dataset_path = Path(
-        cfg["dataset"]["output_dir"]
-    ) / "buffer.pt"
+    print(f"[INFO] Loading dataset from {dataset_path}")
 
-    checkpoint_dir = Path(
-        cfg["training"]["save_dir"]
-    )
+    dataset = SequenceActivationDataset(str(dataset_path))
 
-    print(
-        f"[INFO] Loading dataset from {dataset_path}"
-    )
+    # Derive hidden_dim from data — NOT from cfg["training"]["hidden_dim"].
+    # cfg["training"]["hidden_dim"] is the MLP intermediate dim (2048, legacy).
+    # The actual activation dimension is always dataset[0]["activation_sequence"].shape[-1].
+    hidden_dim = dataset[0]["activation_sequence"].shape[-1]
 
-    dataset = SequenceActivationDataset(
-        dataset_path,
-        
-    )
+    print(f"[INFO] Hidden dim inferred from dataset: {hidden_dim}")
 
     loader = DataLoader(
         dataset,
-        batch_size=cfg["training"][
-            "batch_size"
-        ],
-        shuffle=False
+        batch_size=cfg["training"]["batch_size"],
+        shuffle=False,
+        collate_fn=sequence_collate,  # required: returns "texts" and "activation_sequences"
     )
 
-    reconstructor_type = cfg[
-        "training"
-    ].get(
-        "reconstructor_type"  )
-
-    hidden_dim = cfg["training"][
-        "hidden_dim"
-    ]
-
-    max_seq_len = cfg["activation"].get(
-        "max_length",
-        128,
+    # Build model with same hidden_dim used at training time
+    model = TokenLevelReconstructor(
+        hidden_dim=hidden_dim,
+        n_layers=cfg["training"]["decoder_layers"],
+        n_heads=cfg["training"]["decoder_heads"],
+        max_len=cfg["activation"]["max_length"],
+        encoder_name=cfg["training"].get("encoder_name", "distilgpt2"),
     )
 
-    if reconstructor_type == "token_decoder":
-
-        model = TokenLevelReconstructor(
-            hidden_dim=hidden_dim,
-            max_len=max_seq_len,
-            n_layers=cfg["training"]["decoder_layers"],
-            n_heads=cfg["training"]["decoder_heads"],
-            encoder_name=cfg["training"].get(
-                "encoder_name",
-                "distilgpt2",
-            )
-        )
-
-    else:
-
-        model = ActivationReconstructor(
-            hidden_dim=hidden_dim
-        )
-
-    checkpoint_path = (
-        checkpoint_dir
-        / "best_model.pt"
-    )
-
-    print(
-        f"[INFO] Loading checkpoint {checkpoint_path}"
-    )
-
-    state = torch.load(
-        checkpoint_path,
-        map_location=device,
-        
-
-    )
+    checkpoint_path = checkpoint_dir / "best_model.pt"
+    print(f"[INFO] Loading checkpoint {checkpoint_path}")
 
     model.load_state_dict(
-        state
+        torch.load(checkpoint_path, map_location=device)
     )
-
     model.to(device)
     model.eval()
 
-    original = []
-    reconstructed = []
+    original_vecs: List[torch.Tensor] = []
+    reconstructed_vecs: List[torch.Tensor] = []
 
-    print(
-        "[INFO] Running manifold evaluation..."
-    )
+    print("[INFO] Running manifold evaluation...")
 
     for batch in loader:
+        # sequence_collate returns:
+        #   "texts"                 — List[str]
+        #   "activation_sequences"  — [batch, max_seq_len, hidden_dim]
+        #   "seq_lens"              — [batch]
+        #   "mask"                  — [batch, max_seq_len]
 
-        descriptions = batch[
-            "description"
-        ]
+        texts = batch["texts"]
+        target = batch["activation_sequences"].to(device)   # [B, max_len, hidden]
+        seq_lens = batch["seq_lens"]                        # [B]
 
-        target = batch[
-            "activation_sequence"
-        ].to(device)
+        # Reconstruct using the padded batch max seq_len
+        seq_len = target.shape[1]
 
-        pred = model(
-            descriptions
-        )
+        pred = model(texts, seq_len=seq_len, device=device)   # [B, seq_len, hidden]
 
-        if pred.ndim == 3:
-            pred = pred.mean(dim=1)
+        # Mean-pool over sequence (valid positions only via mask)
+        mask = batch["mask"].to(device).unsqueeze(-1).float()  # [B, max_len, 1]
 
-        pred = F.normalize(
-            pred,
-            dim=-1,
-        )
+        target_pooled = (target * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
+        pred_pooled = (pred * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1.0)
 
-        target = F.normalize(
-            target,
-            dim=-1,
-        )
+        target_pooled = F.normalize(target_pooled, dim=-1)
+        pred_pooled = F.normalize(pred_pooled, dim=-1)
 
-        original.append(
-            target.cpu()
-        )
+        original_vecs.append(target_pooled.cpu())
+        reconstructed_vecs.append(pred_pooled.cpu())
 
-        reconstructed.append(
-            pred.cpu()
-        )
+    original = torch.cat(original_vecs).numpy()
+    reconstructed = torch.cat(reconstructed_vecs).numpy()
 
-    original = torch.cat(
-        original
-    ).numpy()
-
-    reconstructed = torch.cat(
-        reconstructed
-    ).numpy()
-
-    print(
-        "[INFO] Computing metrics..."
-    )
+    print("[INFO] Computing metrics...")
 
     metrics = {
-        "cosine_similarity":
-            cosine_similarity(
-                torch.tensor(
-                    original
-                ),
-                torch.tensor(
-                    reconstructed
-                ),
-            ),
-
-        "euclidean_distance":
-            euclidean_distance(
-                torch.tensor(
-                    original
-                ),
-                torch.tensor(
-                    reconstructed
-                ),
-            ),
-
-        "knn_overlap":
-            compute_knn_overlap(
-                original,
-                reconstructed,
-            ),
-
-        "manifold_consistency":
-            manifold_consistency(
-                original,
-                reconstructed,
-            ),
-
-        "local_density_ratio":
-            local_density_ratio(
-                original,
-                reconstructed,
-            ),
-
-        "centroid_distance":
-            centroid_distance(
-                original,
-                reconstructed,
-            ),
-
-        "pca_projection_error":
-            pca_manifold_score(
-                original,
-                reconstructed,
-            ),
+        "cosine_similarity": cosine_similarity(
+            torch.tensor(original), torch.tensor(reconstructed)
+        ),
+        "euclidean_distance": euclidean_distance(
+            torch.tensor(original), torch.tensor(reconstructed)
+        ),
+        "knn_overlap": compute_knn_overlap(original, reconstructed),
+        "manifold_consistency": manifold_consistency(original, reconstructed),
+        "local_density_ratio": local_density_ratio(original, reconstructed),
+        "centroid_distance": centroid_distance(original, reconstructed),
+        "pca_projection_error": pca_manifold_score(original, reconstructed),
     }
 
-    save_path = (
-        checkpoint_dir
-        / "manifold_metrics.json"
-    )
+    save_path = checkpoint_dir / "manifold_metrics.json"
 
-    with open(
-        save_path,
-        "w",
-    ) as f:
-        json.dump(
-            metrics,
-            f,
-            indent=2,
-        )
+    with open(save_path, "w") as f:
+        json.dump(metrics, f, indent=2)
 
     print("\n=== MANIFOLD RESULTS ===")
-
     for k, v in metrics.items():
-        print(
-            f"{k:28s}: {v:.6f}"
-        )
+        print(f"{k:28s}: {v:.6f}")
 
-    print(
-        f"\n[OK] Saved metrics → {save_path}"
-    )
+    print(f"\n[OK] Saved metrics → {save_path}")
 
     return metrics
 
