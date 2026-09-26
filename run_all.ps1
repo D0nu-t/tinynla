@@ -164,7 +164,8 @@ Write-Host "  checkpoints/ar/best_model.pt"
 Write-Host ""
 
 Write-Host "Metrics"
-Write-Host "  checkpoints/ar/metrics.json"
+Write-Host "  checkpoints/ar/metrics.json             (training history)"
+Write-Host "  checkpoints/ar/functional_metrics.json  (functional eval)"
 Write-Host ""
 
 Write-Host "Interpolation"

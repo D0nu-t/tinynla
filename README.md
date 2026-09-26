@@ -101,7 +101,9 @@ python -m training.eval_functional
 
 Reports 4-condition table (reconstructed / random / zero), interpolation sweep, and perplexity shift.
 
-Output: `checkpoints/ar/metrics.json`, `interpolation.json`
+Output: `checkpoints/ar/functional_metrics.json`, `interpolation.json`
+
+All evaluation stages use only the held-out test indices in `<dataset output_dir>/split.json` (written by `build_buffer`, created on first use for older buffers).
 
 ---
 
@@ -142,6 +144,7 @@ experiments/layer_sweep_<timestamp>/
     └── checkpoints/
         ├── best_model.pt
         ├── metrics.json
+        ├── functional_metrics.json
         └── interpolation.json
 ```
 
@@ -154,7 +157,8 @@ experiments/layer_sweep_<timestamp>/
 | `best_model.pt` | lowest training-loss weights |
 | `latest_model.pt` | end-of-last-epoch weights |
 | `config.json` | config snapshot at training time |
-| `metrics.json` | per-epoch training + functional eval results |
+| `metrics.json` | per-epoch training history |
+| `functional_metrics.json` | functional eval: reconstructed vs shuffled-description / position-mean / random / zero |
 | `interpolation.json` | per-alpha KL/top-k/cosine from interpolation sweep |
 
 ---

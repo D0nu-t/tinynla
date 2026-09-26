@@ -47,16 +47,20 @@ def kl_divergence(
     """
     KL(P_a || P_b) on logits.
 
+    Call as kl_divergence(original, patched) to get KL(original || patched).
+
     Inputs:
         [batch, vocab]
     """
-    p = F.log_softmax(logits_a, dim=-1)
-    q = F.softmax(logits_b, dim=-1)
+    log_p_a = F.log_softmax(logits_a.float(), dim=-1)
+    log_p_b = F.log_softmax(logits_b.float(), dim=-1)
 
+    # F.kl_div(input, target) = sum target * (log target - input)
     return F.kl_div(
-        p,
-        q,
+        log_p_b,
+        log_p_a,
         reduction="batchmean",
+        log_target=True,
     ).item()
 
 
@@ -66,26 +70,43 @@ def topk_overlap(
     k: int = 10,
 ) -> float:
     """
-    Fraction of shared top-k tokens.
+    Fraction of top-k tokens shared between the two distributions
+    (set overlap; rank order is ignored).
     """
     top_a = torch.topk(logits_a, k=k, dim=-1).indices
     top_b = torch.topk(logits_b, k=k, dim=-1).indices
 
-    return (top_a == top_b).float().mean().item()
+    shared = (
+        top_a.unsqueeze(-1) == top_b.unsqueeze(-2)
+    ).any(dim=-1).float().sum(dim=-1)
+
+    return (shared / k).mean().item()
 
 
-def logit_cosine_similarity(
-    logits_a: torch.Tensor,
-    logits_b: torch.Tensor,
-) -> float:
-    """
-    Cosine similarity between logits.
-    """
-    return F.cosine_similarity(
-        logits_a,
-        logits_b,
-        dim=-1,
-    ).mean().item()
+def _functional_metrics(
+    original_logits: torch.Tensor,
+    patched_logits: torch.Tensor,
+    topk: int,
+) -> Dict[str, float]:
+    # Logit cosine was dropped: it is ~0.999 even for a zero patch
+    # because GPT-2 logits share a large common component.
+    return {
+        "kl_divergence": kl_divergence(
+            original_logits,
+            patched_logits,
+        ),
+        "topk_overlap": topk_overlap(
+            original_logits,
+            patched_logits,
+            k=topk,
+        ),
+    }
+
+
+_IDENTITY_METRICS = {
+    "kl_divergence": 0.0,
+    "topk_overlap": 1.0,
+}
 
 
 # ============================================================================
@@ -311,11 +332,7 @@ def evaluate_condition_sequence(
     """
 
     if patch_sequence is None:
-        return {
-            "kl_divergence": 0.0,
-            "topk_overlap": 1.0,
-            "logit_cosine": 1.0,
-        }
+        return dict(_IDENTITY_METRICS)
 
     patcher = SequenceInterpolationPatcher(
         patch_sequence,
@@ -332,23 +349,7 @@ def evaluate_condition_sequence(
 
     handle.remove()
 
-    return {
-        "kl_divergence": kl_divergence(
-            original_logits,
-            patched_logits,
-        ),
-
-        "topk_overlap": topk_overlap(
-            original_logits,
-            patched_logits,
-            k=topk,
-        ),
-
-        "logit_cosine": logit_cosine_similarity(
-            original_logits,
-            patched_logits,
-        ),
-    }
+    return _functional_metrics(original_logits, patched_logits, topk)
 
 
 def evaluate_hidden_trajectory(
@@ -460,9 +461,24 @@ def evaluate_all_conditions_sequence(
     device: str,
     topk: int = 10,
     max_length: int = 128,
+    position_mean_sequence: Optional[torch.Tensor] = None,
+    shuffled_sequence: Optional[torch.Tensor] = None,
 ) -> Dict[str, Dict[str, float]]:
     """
-    4-condition sequence evaluation.
+    Multi-condition sequence evaluation.
+
+    Conditions:
+        reconstructed        AR output from this sample's description
+        shuffled_description AR output from another sample's description
+                             (≈ reconstructed  =>  description is ignored)
+        position_mean        dataset mean trajectory = mean ablation;
+                             the floor a useful reconstruction must beat
+        random               Gaussian directions
+        zero                 all-zero patch
+
+    position_mean and random are rescaled per token to the true residual
+    norms, since the buffer stores unit-norm activations and a unit-norm
+    patch behaves like a zero patch.
     """
 
     toks = tokenizer(
@@ -472,8 +488,23 @@ def evaluate_all_conditions_sequence(
         max_length=max_length,
     ).to(device)
 
+    recorder = HiddenStateRecorder()
+    rec_handle = model.transformer.h[layer_idx].register_forward_hook(
+        recorder.hook_fn
+    )
+
     with torch.no_grad():
         original_logits = model(**toks).logits[:, -1, :]
+
+    rec_handle.remove()
+
+    seq_len = toks["input_ids"].shape[1]
+
+    # [seq_len, 1] true per-token residual norms at this layer
+    true_norms = recorder.hidden[0].norm(dim=-1, keepdim=True).cpu()
+
+    def norm_matched(seq: torch.Tensor) -> torch.Tensor:
+        return F.normalize(seq[:seq_len].float(), dim=-1) * true_norms
 
     shared = dict(
         model=model,
@@ -483,28 +514,22 @@ def evaluate_all_conditions_sequence(
         topk=topk,
     )
 
-    random_seq = F.normalize(
-        torch.randn_like(reconstructed_sequence),
-        dim=-1,
-    )
+    patches = {"reconstructed": reconstructed_sequence}
 
-    zero_seq = torch.zeros_like(reconstructed_sequence)
+    if shuffled_sequence is not None:
+        patches["shuffled_description"] = shuffled_sequence
+
+    if position_mean_sequence is not None:
+        patches["position_mean"] = norm_matched(position_mean_sequence)
+
+    patches["random"] = norm_matched(
+        torch.randn(seq_len, reconstructed_sequence.shape[-1])
+    )
+    patches["zero"] = torch.zeros_like(reconstructed_sequence)
 
     return {
-        "reconstructed": evaluate_condition_sequence(
-            patch_sequence=reconstructed_sequence,
-            **shared,
-        ),
-
-        "random": evaluate_condition_sequence(
-            patch_sequence=random_seq,
-            **shared,
-        ),
-
-        "zero": evaluate_condition_sequence(
-            patch_sequence=zero_seq,
-            **shared,
-        ),
+        name: evaluate_condition_sequence(patch_sequence=patch, **shared)
+        for name, patch in patches.items()
     }
 
 
@@ -528,7 +553,6 @@ def run_interpolation_sweep_sequence(
         alpha: {
             "kl_divergence": [],
             "topk_overlap": [],
-            "logit_cosine": [],
             "trajectory_cosine": [],
             "trajectory_drift": [],
             "norm_difference": [],
@@ -614,11 +638,7 @@ def evaluate_condition(
     """
 
     if patch_vector is None:
-        return {
-            "kl_divergence": 0.0,
-            "topk_overlap": 1.0,
-            "logit_cosine": 1.0,
-        }
+        return dict(_IDENTITY_METRICS)
 
     patcher = InterpolationPatcher(
         patch_vector,
@@ -635,20 +655,4 @@ def evaluate_condition(
 
     handle.remove()
 
-    return {
-        "kl_divergence": kl_divergence(
-            original_logits,
-            patched_logits,
-        ),
-
-        "topk_overlap": topk_overlap(
-            original_logits,
-            patched_logits,
-            k=topk,
-        ),
-
-        "logit_cosine": logit_cosine_similarity(
-            original_logits,
-            patched_logits,
-        ),
-    }
+    return _functional_metrics(original_logits, patched_logits, topk)

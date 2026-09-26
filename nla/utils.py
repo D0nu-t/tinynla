@@ -178,7 +178,7 @@ def resolve_device(
     device:
       auto -> cuda > mps > cpu
     """
-    device = "auto"
+    device = cfg.get("device", "auto")
 
     if device != "auto":
         return device

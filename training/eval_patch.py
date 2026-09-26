@@ -42,7 +42,7 @@ import torch.nn.functional as F
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from nla.dataset import SequenceActivationDataset
+from nla.dataset import SequenceActivationDataset, load_or_create_split
 from nla.reconstructor import TokenLevelReconstructor
 from nla.utils import load_config, resolve_device, set_seed
 
@@ -211,7 +211,16 @@ def main():
 
     dataset = SequenceActivationDataset(str(buffer_path))
 
-    print(f"[INFO] Loaded dataset: {len(dataset)} samples")
+    test_indices = load_or_create_split(
+        cfg["dataset"]["output_dir"],
+        n=len(dataset),
+        seed=cfg["experiment"]["seed"],
+    )["test"]
+
+    print(
+        f"[INFO] Loaded dataset: {len(dataset)} samples "
+        f"({len(test_indices)} held-out test)"
+    )
 
     hidden_dim = dataset[0]["activation_sequence"].shape[-1]
 
@@ -257,10 +266,10 @@ def main():
     print("\n[INFO] Running geometric trajectory evaluation...")
 
     with torch.no_grad():
-        for item in tqdm(dataset.samples, desc="eval_patch"):
+        for idx in tqdm(test_indices, desc="eval_patch"):
             metrics = evaluate_sample(
                 model=model,
-                item=item,
+                item=dataset.samples[idx],
                 device=device,
             )
 

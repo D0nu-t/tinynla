@@ -36,10 +36,7 @@ import torch
 import yaml
 from dotenv import load_dotenv
 
-from nla.utils import (
-    load_config,
-    seed_worker,
-)
+from nla.utils import load_config
 
 load_dotenv()
 
@@ -287,7 +284,7 @@ def main():
         # ------------------------------------------------------------------
 
         metrics_path = (
-            checkpoint_dir / "metrics.json"
+            checkpoint_dir / "functional_metrics.json"
         )
 
         interp_path = (
@@ -370,7 +367,7 @@ def main():
         f"{'Layer':>6}  "
         f"{'KL':>10}  "
         f"{'Top-k':>10}  "
-        f"{'Cos':>10}  "
+        f"{'KL(mean)':>10}  "
         f"{'PPL':>10}  "
         f"{'Status':>10}"
     )
@@ -390,8 +387,9 @@ def main():
             "reconstructed/topk_overlap_mean"
         )
 
-        cos = metrics.get(
-            "reconstructed/logit_cosine_mean"
+        # position-mean baseline: the floor the reconstruction must beat
+        kl_mean = metrics.get(
+            "position_mean/kl_divergence_mean"
         )
 
         ppl = metrics.get(
@@ -408,7 +406,7 @@ def main():
             f"{entry['layer']:>6}  "
             f"{format_metric(kl):>10}  "
             f"{format_metric(topk):>10}  "
-            f"{format_metric(cos):>10}  "
+            f"{format_metric(kl_mean):>10}  "
             f"{format_metric(ppl):>10}  "
             f"{status:>10}"
         )
@@ -440,8 +438,8 @@ def main():
         )
 
         print(
-            f"Logit cosine: "
-            f"{best_metrics['reconstructed/logit_cosine_mean']:.4f}"
+            f"KL (position-mean baseline): "
+            f"{format_metric(best_metrics.get('position_mean/kl_divergence_mean'))}"
         )
 
     print("\nArtifacts:")

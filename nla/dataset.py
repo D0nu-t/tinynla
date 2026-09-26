@@ -21,8 +21,11 @@ Key upgrades:
   - Optional memory-efficient loading preparation
 """
 
+import json
 import os
-from typing import Dict, List, Optional
+import random
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
 
 import torch
 from torch.utils.data import Dataset
@@ -195,6 +198,34 @@ class SequenceActivationDataset(Dataset):
             for s in self.samples
         ]
 
+    def position_mean(
+        self,
+        indices: Sequence[int],
+        max_len: int,
+    ) -> torch.Tensor:
+        """
+        Per-position mean trajectory over the given samples.
+
+        This is the "mean ablation" baseline: the best a reconstructor can
+        do if it ignores the description entirely.
+
+        Returns:
+            [max_len, hidden_dim]
+        """
+        total = torch.zeros(max_len, self.hidden_dim)
+        count = torch.zeros(max_len)
+
+        for i in indices:
+            seq = _ensure_float32(
+                self.samples[i]["activation_sequence"]
+            )[:max_len]
+            length = seq.shape[0]
+
+            total[:length] += seq
+            count[:length] += 1
+
+        return total / count.clamp(min=1).unsqueeze(-1)
+
     def stats(self) -> Dict:
         lengths = self.sequence_lengths
 
@@ -288,6 +319,87 @@ def sequence_collate(batch: List[Dict]) -> Dict:
         "seq_lens": torch.tensor(seq_lens, dtype=torch.long),
         "mask": mask,
     }
+
+
+# ===========================================================================
+# Train / val / test split
+# ===========================================================================
+
+SPLIT_FILENAME = "split.json"
+
+
+def make_split(
+    n: int,
+    seed: int = 42,
+    val_frac: float = 0.05,
+    test_frac: float = 0.05,
+) -> Dict[str, List[int]]:
+    """
+    Deterministic index split into train / val / test.
+    """
+    indices = list(range(n))
+    random.Random(seed).shuffle(indices)
+
+    n_test = max(1, int(n * test_frac))
+    n_val = max(1, int(n * val_frac))
+
+    return {
+        "test": sorted(indices[:n_test]),
+        "val": sorted(indices[n_test:n_test + n_val]),
+        "train": sorted(indices[n_test + n_val:]),
+    }
+
+
+def save_split(
+    split: Dict[str, List[int]],
+    dataset_dir: str,
+    seed: int,
+) -> Path:
+    path = Path(dataset_dir) / SPLIT_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    n = sum(len(v) for v in split.values())
+
+    with open(path, "w") as f:
+        json.dump({"num_samples": n, "seed": seed, **split}, f)
+
+    return path
+
+
+def load_or_create_split(
+    dataset_dir: str,
+    n: int,
+    seed: int = 42,
+    val_frac: float = 0.05,
+    test_frac: float = 0.05,
+) -> Dict[str, List[int]]:
+    """
+    Load <dataset_dir>/split.json, creating it if missing.
+
+    Every stage (training and all evaluations) must use this so that
+    evaluation runs only on held-out samples.
+    """
+    path = Path(dataset_dir) / SPLIT_FILENAME
+
+    if path.exists():
+        with open(path) as f:
+            data = json.load(f)
+
+        if data["num_samples"] != n:
+            raise ValueError(
+                f"{path} was made for {data['num_samples']} samples "
+                f"but the buffer has {n}. Rebuild the buffer or "
+                f"delete the stale split file."
+            )
+
+        return {k: data[k] for k in ("train", "val", "test")}
+
+    split = make_split(n, seed, val_frac, test_frac)
+    save_split(split, dataset_dir, seed)
+
+    print(f"[INFO] Created new split: {path}")
+
+    return split
 
 
 # ===========================================================================

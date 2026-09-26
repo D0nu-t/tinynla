@@ -34,11 +34,12 @@ from typing import Dict, List
 import numpy as np
 import torch
 from dotenv import load_dotenv
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from nla.dataset import (
     SequenceActivationDataset,
+    load_or_create_split,
     sequence_collate,
 )
 from nla.losses import (
@@ -161,15 +162,18 @@ def train_ar(cfg: Dict):
 
     dataset = SequenceActivationDataset(str(buffer_path))
 
-    val_split = cfg["training"].get("val_split", 0.05)
-
-    val_size = max(1, int(len(dataset) * val_split))
-    train_size = len(dataset) - val_size
-
-    train_dataset, val_dataset = random_split(
-        dataset,
-        [train_size, val_size],
+    # Fixed split shared with every eval script; test is never trained on.
+    split = load_or_create_split(
+        cfg["dataset"]["output_dir"],
+        n=len(dataset),
+        seed=cfg["experiment"]["seed"],
     )
+
+    train_dataset = Subset(dataset, split["train"])
+    val_dataset = Subset(dataset, split["val"])
+
+    train_size = len(train_dataset)
+    val_size = len(val_dataset)
 
     train_loader = DataLoader(
         train_dataset,

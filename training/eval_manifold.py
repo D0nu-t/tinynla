@@ -36,13 +36,17 @@ import torch
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 
 import dotenv
 dotenv.load_dotenv()
 print("Environment variables loaded from .env")
 
-from nla.dataset import SequenceActivationDataset, sequence_collate
+from nla.dataset import (
+    SequenceActivationDataset,
+    load_or_create_split,
+    sequence_collate,
+)
 from nla.reconstructor import TokenLevelReconstructor
 from nla.utils import load_config, resolve_device, set_seed
 
@@ -155,8 +159,16 @@ def evaluate_manifold() -> Dict:
 
     print(f"[INFO] Hidden dim inferred from dataset: {hidden_dim}")
 
+    test_indices = load_or_create_split(
+        cfg["dataset"]["output_dir"],
+        n=len(dataset),
+        seed=cfg["experiment"]["seed"],
+    )["test"]
+
+    print(f"[INFO] Evaluating {len(test_indices)} held-out test samples")
+
     loader = DataLoader(
-        dataset,
+        Subset(dataset, test_indices),
         batch_size=cfg["training"]["batch_size"],
         shuffle=False,
         collate_fn=sequence_collate,  # required: returns "texts" and "activation_sequences"

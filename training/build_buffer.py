@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from nla.activations import ActivationExtractor
-from nla.dataset import save_dataset
+from nla.dataset import make_split, save_dataset, save_split
 from nla.labeler import SemanticLabeler
 from nla.utils import load_config, resolve_device, set_seed
 
@@ -301,6 +301,13 @@ def build_buffer(cfg: dict) -> None:
         skipped=skipped,
     )
 
+    # A new buffer invalidates any old split, so always write a fresh one.
+    split_path = save_split(
+        make_split(len(samples), seed=cfg["experiment"]["seed"]),
+        str(output_dir),
+        seed=cfg["experiment"]["seed"],
+    )
+
     # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
@@ -352,6 +359,10 @@ def build_buffer(cfg: dict) -> None:
     print(
         f"[OK] Saved metadata:"
         f" {metadata_path}"
+    )
+    print(
+        f"[OK] Saved split:"
+        f"    {split_path}"
     )
 
 

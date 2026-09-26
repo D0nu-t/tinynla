@@ -19,10 +19,12 @@ For each sample:
 4. patch trajectory back into residual stream
 5. compare patched vs original behavior
 
-Evaluated conditions:
-    reconstructed  — AR output
-    random         — Gaussian noise trajectory
-    zero           — null trajectory
+Evaluated conditions (held-out test split only):
+    reconstructed         — AR output
+    shuffled_description  — AR output from another sample's description
+    position_mean         — mean-ablation trajectory (norm-matched)
+    random                — Gaussian noise trajectory (norm-matched)
+    zero                  — null trajectory
 
 Additionally:
     - interpolation alpha sweep
@@ -32,7 +34,7 @@ Additionally:
 
 Outputs
 -------
-metrics.json
+functional_metrics.json
 interpolation.json
 manifold.json
 
@@ -60,7 +62,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from nla.dataset import SequenceActivationDataset
+from nla.dataset import SequenceActivationDataset, load_or_create_split
 from nla.evaluation import (
     evaluate_all_conditions_sequence,
     perplexity_shift,
@@ -203,30 +205,41 @@ def main():
     # Evaluation state
     # ----------------------------------------------------------------------
 
-    num_eval = min(
-        cfg["evaluation"]["num_eval_samples"],
-        len(dataset),
+    split = load_or_create_split(
+        cfg["dataset"]["output_dir"],
+        n=len(dataset),
+        seed=cfg["experiment"]["seed"],
     )
 
-    samples = dataset.samples[:num_eval]
+    test_indices = split["test"]
 
-    cond_metrics: Dict[str, Dict[str, List[float]]] = {
-        "reconstructed": {
-            "kl_divergence": [],
-            "topk_overlap": [],
-            "logit_cosine": [],
-        },
-        "random": {
-            "kl_divergence": [],
-            "topk_overlap": [],
-            "logit_cosine": [],
-        },
-        "zero": {
-            "kl_divergence": [],
-            "topk_overlap": [],
-            "logit_cosine": [],
-        },
-    }
+    num_eval = min(
+        cfg["evaluation"]["num_eval_samples"],
+        len(test_indices),
+    )
+
+    samples = [dataset.samples[i] for i in test_indices[:num_eval]]
+
+    print(f"[INFO] Evaluating on held-out test split ({num_eval} samples)")
+
+    # Mean-ablation baseline, computed from training samples only.
+    position_mean = dataset.position_mean(
+        split["train"],
+        max_len=max_length,
+    )
+
+    # Shuffled-description baseline: for each sample, the next test sample
+    # whose description differs. If reconstructed ≈ shuffled, the AR is
+    # ignoring the description.
+    def _shuffled_description(i: int) -> str:
+        own = samples[i]["description"]
+        for j in range(1, len(samples)):
+            other = samples[(i + j) % len(samples)]["description"]
+            if other != own:
+                return other
+        return own
+
+    cond_metrics: Dict[str, Dict[str, List[float]]] = {}
 
     ppl_shifts: List[float] = []
 
@@ -245,7 +258,7 @@ def main():
 
     print(f"\n[INFO] Evaluating {num_eval} samples...")
 
-    for item in tqdm(samples):
+    for sample_idx, item in enumerate(tqdm(samples)):
 
         text = item["text"]
         description = item["description"]
@@ -273,7 +286,14 @@ def main():
                 device=device,
             )
 
-        recon_sequence = recon_sequence.squeeze(0).cpu()
+            shuffled_sequence = ar(
+                [_shuffled_description(sample_idx)],
+                seq_len=seq_len,
+                device=device,
+            )
+
+        recon_sequence = recon_sequence.squeeze(0).float().cpu()
+        shuffled_sequence = shuffled_sequence.squeeze(0).float().cpu()
 
         # --------------------------------------------------------------
         # Trajectory cosine similarity
@@ -308,11 +328,15 @@ def main():
             device=device,
             topk=topk,
             max_length=max_length,
+            position_mean_sequence=position_mean,
+            shuffled_sequence=shuffled_sequence,
         )
 
-        for cond in ("reconstructed", "random", "zero"):
-            for metric, val in result[cond].items():
-                cond_metrics[cond][metric].append(val)
+        for cond, cond_result in result.items():
+            for metric, val in cond_result.items():
+                cond_metrics.setdefault(cond, {}).setdefault(
+                    metric, []
+                ).append(val)
 
         # --------------------------------------------------------------
         # Perplexity shift
@@ -478,16 +502,15 @@ def main():
     print("=" * 70)
 
     header = (
-        f"{'Condition':<16}"
+        f"{'Condition':<24}"
         f"{'KL':>12}"
         f"{'Top-k':>12}"
-        f"{'Cosine':>12}"
     )
 
     print(header)
     print("-" * len(header))
 
-    for cond in ("reconstructed", "random", "zero"):
+    for cond in cond_metrics:
 
         kl = results.get(
             f"{cond}/kl_divergence_mean",
@@ -499,17 +522,15 @@ def main():
             0.0,
         )
 
-        cos = results.get(
-            f"{cond}/logit_cosine_mean",
-            0.0,
-        )
-
         print(
-            f"{cond:<16}"
+            f"{cond:<24}"
             f"{kl:>12.4f}"
             f"{overlap:>12.4f}"
-            f"{cos:>12.4f}"
         )
+
+    print()
+    print("A useful reconstruction must beat position_mean (mean ablation)")
+    print("and shuffled_description (proves the description is used).")
 
     print()
 
@@ -554,7 +575,6 @@ def main():
             f"{'alpha':>8}"
             f"{'KL':>12}"
             f"{'Top-k':>12}"
-            f"{'Cosine':>12}"
         )
 
         for alpha in sorted(interp_results):
@@ -565,7 +585,6 @@ def main():
                 f"{alpha:>8.2f}"
                 f"{r['kl_divergence_mean']:>12.4f}"
                 f"{r['topk_overlap_mean']:>12.4f}"
-                f"{r['logit_cosine_mean']:>12.4f}"
             )
 
     print()
@@ -574,7 +593,8 @@ def main():
     # Save artifacts
     # ==========================================================================
 
-    with open(save_dir / "metrics.json", "w") as f:
+    # Separate file: metrics.json holds train_ar's training history.
+    with open(save_dir / "functional_metrics.json", "w") as f:
         json.dump(results, f, indent=2)
 
     with open(save_dir / "manifold.json", "w") as f:
