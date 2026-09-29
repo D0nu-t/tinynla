@@ -1,0 +1,36 @@
+.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.span2 { grid-column: span 2; }
+@media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } .span2 { grid-column: auto; } }
+
+.stages { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.stage { padding: 6px 12px; border-radius: 16px; font-size: 13px; border: 1px solid var(--line); background: var(--bg); }
+.stage.done { border-color: var(--good); color: var(--good); }
+.stage.running { border-color: var(--accent); color: var(--accent); font-weight: 600; animation: pulse 2s infinite; }
+.stage.failed { border-color: var(--bad); color: var(--bad); }
+.stage.pending { color: var(--muted); }
+.arrow { color: var(--muted); }
+@keyframes pulse { 50% { opacity: .55; } }
+
+.progress { margin-top: 14px; font-size: 13px; color: var(--muted); }
+.bar-outer { height: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow: hidden; margin: 6px 0; }
+.bar-inner { height: 100%; background: var(--accent); transition: width .6s; }
+.progress b { color: var(--ink); }
+
+.gauge { margin-bottom: 12px; font-size: 13px; }
+.gauge .bar-inner.hot { background: var(--bad); }
+.gauge .bar-inner.warm { background: var(--warn); }
+
+.messages { font: 12px/1.45 var(--mono); max-height: 320px; overflow: auto; margin: 0; white-space: pre-wrap;
+  word-break: break-word; color: var(--muted); }
+.checks { list-style: none; padding: 0; margin: 8px 0; }
+.checks li { font-size: 14px; margin: 3px 0; }
+.pass { color: var(--good); font-weight: 600; }
+.fail { color: var(--bad); font-weight: 600; }
+.kv { display: grid; grid-template-columns: auto auto; gap: 2px 16px; font-size: 13px; }
+.kv span:nth-child(odd) { color: var(--muted); }
+.stale { color: var(--warn); }
+.chart .line { fill: none; stroke-width: 2; }
+.chart .raw { fill: none; stroke-width: 1; opacity: .25; }
+.legend-row { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.legend-row i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 5px; }

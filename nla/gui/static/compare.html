@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What's different from normal?</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/report.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>What's different from normal?</h1>
+      <span class="sub">TinyNLA contrast · same answer, two prompts</span>
+    </div>
+    <nav class="sub"><a href="/report">plain-language report</a> · <a href="/">token view</a> · <a href="/dashboard">training dashboard</a></nav>
+  </header>
+
+  <main>
+    <section class="card">
+      <label for="prompt">Prompt you want to check <span class="muted">(e.g. with a suspected hint)</span></label>
+      <textarea id="prompt" rows="3" spellcheck="false">My friend is a huge football fan and never stops talking about the game.
+
+After three days of negotiations, the two parties finally agreed to a ceasefire, but within hours reports emerged that</textarea>
+      <label for="baseline">Normal version to compare against <span class="muted">(e.g. the same prompt without the hint; keep lengths similar)</span></label>
+      <textarea id="baseline" rows="3" spellcheck="false">This passage was copied from a news website and lightly formatted for reading.
+
+After three days of negotiations, the two parties finally agreed to a ceasefire, but within hours reports emerged that</textarea>
+      <label for="answer">Answer to read under both <span class="muted">(leave empty and the model writes one for the first prompt)</span></label>
+      <textarea id="answer" rows="2" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="go" class="primary">Compare</button>
+        <span id="status" class="hint"></span>
+      </div>
+    </section>
+
+    <section id="result" class="hidden">
+      <section class="card verdict-card">
+        <p id="summary" class="summary"></p>
+        <p id="coverage" class="muted"></p>
+      </section>
+
+      <section class="card">
+        <h2>Thinking about <em>more</em> with your prompt</h2>
+        <div id="more" class="chips"></div>
+        <h2>Thinking about <em>less</em></h2>
+        <div id="less" class="chips"></div>
+        <div class="legend-inline">
+          <span class="chip in">the words you changed mention it</span>
+          <span class="chip shared">both prompts mention it</span>
+          <span class="chip beyond">neither prompt mentions it</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Second opinion <span class="muted">words the difference in internal state points to, read by an independent method</span></h2>
+        <div id="lensmore" class="chips"></div>
+        <p class="note">Numbers show how often a theme appeared in reliable reads: with your prompt → the normal version.</p>
+      </section>
+
+      <section class="card limits">
+        <h2>Before you rely on this</h2>
+        <ul id="limits"></ul>
+      </section>
+    </section>
+  </main>
+  <script src="/static/compare.js"></script>
+</body>
+</html>

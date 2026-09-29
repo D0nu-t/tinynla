@@ -31,9 +31,9 @@ from datasets import load_dataset
 from dotenv import load_dotenv
 from tqdm import tqdm
 
-from nla.activations import ActivationExtractor
+from nla.legacy.activations import ActivationExtractor
 from nla.dataset import make_split, save_dataset, save_split
-from nla.labeler import SemanticLabeler
+from nla.legacy.labeler import SemanticLabeler
 from nla.utils import load_config, resolve_device, set_seed
 
 load_dotenv()

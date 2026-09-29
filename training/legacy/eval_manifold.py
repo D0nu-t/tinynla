@@ -47,7 +47,7 @@ from nla.dataset import (
     load_or_create_split,
     sequence_collate,
 )
-from nla.reconstructor import TokenLevelReconstructor
+from nla.legacy.reconstructor import TokenLevelReconstructor
 from nla.utils import load_config, resolve_device, set_seed
 
 

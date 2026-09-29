@@ -63,7 +63,7 @@ from tqdm import tqdm
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from nla.dataset import SequenceActivationDataset, load_or_create_split
-from nla.evaluation import (
+from nla.legacy.evaluation import (
     evaluate_all_conditions_sequence,
     perplexity_shift,
     run_interpolation_sweep_sequence,
@@ -72,7 +72,7 @@ from nla.metrics import (
     cosine_similarity_metric,
     manifold_offmanifold_ratio,
 )
-from nla.reconstructor import TokenLevelReconstructor
+from nla.legacy.reconstructor import TokenLevelReconstructor
 from nla.tracking import WandbTracker
 from nla.utils import load_config, resolve_device, set_seed
 

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>What was the model thinking?</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/report.css">
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>What was the model thinking?</h1>
+      <span class="sub">TinyNLA report · plain-language view</span>
+    </div>
+    <nav class="sub"><a href="/compare">compare with normal</a> · <a href="/">token view</a> · <a href="/dashboard">training dashboard</a></nav>
+  </header>
+
+  <main>
+    <section class="card">
+      <label for="prompt">Question or text you gave the model</label>
+      <textarea id="prompt" rows="2" spellcheck="false">After three days of negotiations, the two parties finally agreed to a ceasefire, but within hours reports emerged that</textarea>
+      <label for="answer">The model's answer <span class="muted">(leave empty and the model will write one)</span></label>
+      <textarea id="answer" rows="2" spellcheck="false"></textarea>
+      <div class="row">
+        <button id="go" class="primary">Explain the answer</button>
+        <span id="status" class="hint"></span>
+      </div>
+    </section>
+
+    <section id="result" class="hidden">
+      <section class="card verdict-card">
+        <div id="verdict" class="verdict"></div>
+        <p id="summary" class="summary"></p>
+        <p id="coverage" class="muted"></p>
+        <p id="unusual" class="unusual hidden"></p>
+      </section>
+
+      <section class="card">
+        <h2>Recurring themes <span class="muted">what showed up again and again in the model's internal state</span></h2>
+        <div id="themes" class="chips"></div>
+        <div class="legend-inline">
+          <span class="chip in">in the text</span>
+          <span class="chip beyond">not in the text: the model's own idea, or noise</span>
+          <span class="chip named">a name the text never mentions: an association, not a fact</span>
+        </div>
+      </section>
+
+      <section id="unverified-card" class="card hidden">
+        <h2>Unverified but consistent <span class="muted">themes the reads kept returning to, though our check could not verify them</span></h2>
+        <div id="unverified" class="chips"></div>
+        <p class="note">Our check asks whether the whole internal state can be rebuilt from an explanation. When one idea dominates, explanations mention only that idea and fail the check even if they are right. Recurring themes like these may be the most important finding, or noise.</p>
+      </section>
+
+      <section class="card">
+        <h2>Second opinion <span class="muted">words the model was leaning towards, read by an independent method (<span id="lenskind">lens</span>)</span></h2>
+        <div id="leaning" class="chips"></div>
+        <p class="note">Themes marked ✓ above were found by both our decoder and this independent method, so trust those most.</p>
+      </section>
+
+      <section class="card limits">
+        <h2>Before you rely on this</h2>
+        <ul id="limits"></ul>
+      </section>
+
+      <details class="card">
+        <summary><b>Details for specialists</b> <span class="muted">every read, per word, with its label</span></summary>
+        <div id="answerline" class="answerline"></div>
+        <div id="tokens"></div>
+      </details>
+    </section>
+  </main>
+  <script src="/static/report.js"></script>
+</body>
+</html>

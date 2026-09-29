@@ -28,93 +28,15 @@ import torch
 import yaml
 
 
-# ============================================================================
-# Constants
-# ============================================================================
-
-_DEFAULT_CONFIG = "configs/base.yaml"
-
-
-# ============================================================================
-# Config utilities
-# ============================================================================
-
-def _deep_update(
-    base: Dict[str, Any],
-    override: Dict[str, Any],
-) -> Dict[str, Any]:
-    """
-    Recursively merge dictionaries.
-
-    Values in override take precedence.
-    """
-    out = deepcopy(base)
-
-    for k, v in override.items():
-
-        if (
-            k in out
-            and isinstance(out[k], dict)
-            and isinstance(v, dict)
-        ):
-            out[k] = _deep_update(out[k], v)
-
-        else:
-            out[k] = v
-
-    return out
-
-
-def load_yaml(path: str | Path) -> Dict[str, Any]:
-    """
-    Load YAML safely.
-    """
-    path = Path(path)
-
-    if not path.exists():
-        raise FileNotFoundError(
-            f"Config file not found: {path}"
-        )
-
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def load_config(
-    override_path: Optional[str] = None,
-    overrides: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    """
-    Load TinyNLA config.
-
-    Priority:
-      1. override_path argument
-      2. TINYNLA_CONFIG env var
-      3. configs/base.yaml
-
-    Args:
-        override_path:
-            Explicit YAML path.
-
-        overrides:
-            Optional runtime overrides dictionary.
-
-    Returns:
-        Fully merged config dict.
-    """
-    path = (
-        override_path
-        or os.environ.get("TINYNLA_CONFIG")
-        or _DEFAULT_CONFIG
-    )
-
-    cfg = load_yaml(path)
-
-    if overrides:
-        cfg = _deep_update(cfg, overrides)
-
-    return cfg
-
+from nla.config import (  # noqa: F401  (re-exported; torch-free)
+    _DEFAULT_CONFIG,
+    _deep_update,
+    cli_config,
+    load_config,
+    load_yaml,
+    parse_overrides,
+    utf8_stdio,
+)
 
 def save_config(
     cfg: Dict[str, Any],
@@ -371,3 +293,49 @@ def validate_config(
         raise ValueError(
             "training.lr must be > 0"
         )
+
+# ============================================================================
+# Surviving GPU memory spikes from other programs
+# ============================================================================
+
+def is_cuda_oom(err: BaseException) -> bool:
+    """
+    A CUDA out-of-memory error, from PyTorch's allocator (OutOfMemoryError) or
+    from the driver ("CUDA error: out of memory", raised as AcceleratorError /
+    RuntimeError). On Windows the GPU is shared with the desktop and browsers, so
+    a job that fits can still hit either when another program briefly claims memory.
+    """
+    return isinstance(err, torch.OutOfMemoryError) or "out of memory" in str(err).lower()
+
+
+def wait_for_gpu(attempt: int, wait: float = 30.0, label: str = "") -> None:
+    """Free cached blocks and back off (wait x attempt seconds) after an OOM."""
+    import gc
+    import time
+
+    print(f"\n[oom] {label or 'step'}: GPU out of memory (attempt {attempt}); "
+          f"another program may be using the GPU. Retrying in {wait * attempt:.0f}s.", flush=True)
+    gc.collect()
+    time.sleep(wait * attempt)
+    if torch.cuda.is_available():
+        try:
+            # when the card is fully exhausted even this call can fail with a driver
+            # OOM; that must not end the run (the pipeline also retries whole stages)
+            torch.cuda.empty_cache()
+        except Exception as e:  # noqa: BLE001
+            print(f"[oom] could not free the cache yet: {str(e).splitlines()[0]}", flush=True)
+
+
+def retry_on_cuda_oom(fn, tries: int = 6, wait: float = 30.0, label: str = ""):
+    """
+    Call fn(); on a CUDA OOM, free memory, wait and try again (up to `tries`).
+    Only for work that is safe to repeat (it must not have half-applied an update).
+    Total patience with the defaults: 30+60+...+150 s, about 7.5 minutes.
+    """
+    for attempt in range(1, tries + 1):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 - re-raised unless it is an OOM
+            if not is_cuda_oom(e) or attempt == tries:
+                raise
+            wait_for_gpu(attempt, wait, label)

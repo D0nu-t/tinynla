@@ -2,9 +2,17 @@ torch
 transformers
 datasets
 accelerate
-wandb
+peft
 numpy
 tqdm
 pyyaml
-scikit-learn
 python-dotenv
+fastapi
+uvicorn[standard]
+# legacy v3 pipeline only
+wandb
+scikit-learn
+# development
+playwright   # scripts/capture_gui.py (uses installed Edge)
+pytest
+httpx

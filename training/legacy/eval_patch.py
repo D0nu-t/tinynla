@@ -43,7 +43,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 
 from nla.dataset import SequenceActivationDataset, load_or_create_split
-from nla.reconstructor import TokenLevelReconstructor
+from nla.legacy.reconstructor import TokenLevelReconstructor
 from nla.utils import load_config, resolve_device, set_seed
 
 load_dotenv()

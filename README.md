@@ -1,197 +1,98 @@
 # TinyNLA
 
-## Requirements
+A small-model **Natural Language Autoencoder** (NLA) that can read a language model's "thoughts". It follows
+[Fraser-Taliente et al. 2026](https://transformer-circuits.pub/2026/nla/) and
+[kitft/natural_language_autoencoders](https://github.com/kitft/natural_language_autoencoders), scaled down to a single 4 GB GPU.
+
+```
+activation h (one token, layer K) ──► AV ──► "explanation" ──► AR ──► ĥ
+                                     verbalizer           reconstructor
+score: FVE = 1 − E‖h − ĥ‖² / E‖h − h̄‖²      (0 = no better than the average activation)
+```
+
+- **AV (activation verbalizer)**: a copy of the target model. The activation is injected as the embedding of a special
+  `<|inject|>` token in `Explain: <concept><|inject|></concept>`, and the AV writes `<explanation>…</explanation>`.
+- **AR (activation reconstructor)**: the target's own first K+1 blocks plus a `Linear(d,d)` head, read out at the last token.
+- **Training**:
+  1. Warm start: SFT on summaries of the text up to the token.
+  2. **GRPO**: the AV is rewarded for explanations that let the AR rebuild the activation.
+
+  RL is what makes explanations describe the internal state rather than just restating the input.
+
+## Setup
 
 ```powershell
-pip install torch transformers datasets accelerate wandb tqdm pyyaml python-dotenv scikit-learn numpy
+python -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
 ```
 
-Authenticate with Hugging Face (required for dataset access):
+## Run the pipeline
 
 ```powershell
-huggingface-cli login
+.\run_nla.ps1                                   # GPT-2 small, layer 8
+.\run_nla.ps1 -From av_sft                      # resume from a stage
+.\run_nla.ps1 -Config configs\qwen05b.yaml      # Qwen2.5-0.5B-Instruct with LoRA
 ```
 
-For WandB tracking:
+| Stage | Command | Output |
+|---|---|---|
+| Data | `python -m training.datagen` | `data/<run>/buffer.pt`, `split.json`, `nla_meta.yaml` |
+| AR SFT | `python -m training.train_ar_sft` | `checkpoints/<run>/ar_sft/` + `ar_sft_eval.json` |
+| AV SFT | `python -m training.train_av_sft` | `checkpoints/<run>/av_sft/` (sets `injection_scale`) |
+| RL | `python -m training.train_rl` | `checkpoints/<run>/rl/{av,ar}` + `metrics.jsonl` |
+| Eval | `python -m training.eval_nla` | `nla_eval.json` next to the evaluated AV |
+
+Every entry point takes `--config` and repeatable `--set section.key=value` overrides
+(e.g. `--set rl.steps=500 --set device=cpu`).
+
+## Read thoughts
 
 ```powershell
-wandb login
+python -m nla.read "The capital of France is" --samples 3
+python -m nla.gui                                # Thought Reader at http://127.0.0.1:8000
 ```
 
-To disable WandB, set in `configs/base.yaml`:
+The GUI tokenizes your text. Click a token (or use ←/→ and Enter) to stream explanations for its activation.
 
-```yaml
-tracking:
-  use_wandb: false
-```
+- Each explanation has an AR self-check FVE.
+- Words that recur across samples are highlighted, since recurring claims are more trustworthy.
+- A chart compares the result against the controls: shuffled explanations and the average activation.
+- Clicking an explanation shows the true vs reconstructed activation on the dimensions where they differ most.
 
----
+## Is it working? (touchstone checks)
 
-## Environment
+`eval_nla` reports these on held-out activations:
 
-Copy `.env.example` to `.env` and populate if needed. The project also reads `HF_TOKEN` and `WANDB_API_KEY` from environment directly.
-
-```powershell
-$env:HF_TOKEN = "your_token"
-$env:WANDB_API_KEY = "your_key"
-```
-
----
-
-## Configuration
-
-All settings live in `configs/base.yaml`. Key fields:
-
-```yaml
-model:
-  target_name: "gpt2"          # target LM
-
-activation:
-  layer_idx: 5                 # single-layer experiments
-  layer_indices: [1,3,5,7,9,11] # layer sweep
-  pooling: "mean"              # "mean" | "last"
-
-training:
-  reconstructor_type: "pooled_mlp"   # "pooled_mlp" | "token_decoder"
-
-device: "auto"                 # "auto" | "cuda" | "cpu"
-```
-
----
-
-## Running Individual Stages
-
-All commands run from the project root.
-
-### Stage 0 — Build activation buffer
-
-```powershell
-python -m training.build_buffer
-```
-
-Output: `datasets/activation_buffer/buffer.pt`, `metadata.json`
-
----
-
-### Stage 1 — Train reconstructor
-
-```powershell
-python -m training.train_ar
-```
-
-Output: `checkpoints/ar/best_model.pt`, `latest_model.pt`, `config.json`, `metrics.json`
-
----
-
-### Stage 2a — Geometric evaluation
-
-```powershell
-python -m training.eval_patch
-```
-
-Reports mean cosine similarity between reconstructed and target activations.
-
----
-
-### Stage 2b — Functional evaluation
-
-```powershell
-python -m training.eval_functional
-```
-
-Reports 4-condition table (reconstructed / random / zero), interpolation sweep, and perplexity shift.
-
-Output: `checkpoints/ar/functional_metrics.json`, `interpolation.json`
-
-All evaluation stages use only the held-out test indices in `<dataset output_dir>/split.json` (written by `build_buffer`, created on first use for older buffers).
-
----
-
-## Running the Full Pipeline
-
-```powershell
-.\run_all.ps1
-```
-
-Runs stages 0 → 1 → 2a → 2b sequentially. Exits on first failure.
-
----
-
-## Running a Layer Sweep
-
-```powershell
-.\run_all.ps1 -Sweep
-```
-
-Or directly:
-
-```powershell
-python -m training.layer_sweep
-```
-
-Runs the full pipeline for each layer in `activation.layer_indices`.
-
-Outputs written to `experiments/layer_sweep_<timestamp>/`.
-
-Per-layer artifacts:
-
-```text
-experiments/layer_sweep_<timestamp>/
-├── summary.json
-└── layer_<N>/
-    ├── config.yaml
-    ├── dataset/buffer.pt
-    └── checkpoints/
-        ├── best_model.pt
-        ├── metrics.json
-        ├── functional_metrics.json
-        └── interpolation.json
-```
-
----
-
-## Checkpoint Naming
-
-| File | Contents |
+| Check | Pass condition |
 |---|---|
-| `best_model.pt` | lowest training-loss weights |
-| `latest_model.pt` | end-of-last-epoch weights |
-| `config.json` | config snapshot at training time |
-| `metrics.json` | per-epoch training history |
-| `functional_metrics.json` | functional eval: reconstructed vs shuffled-description / position-mean / random / zero |
-| `interpolation.json` | per-alpha KL/top-k/cosine from interpolation sweep |
+| 1 beats the mean | `av_fve` > 0.05 |
+| 1b beats the input summary | `av_fve` > `summary_fve` (after RL; the evidence of reading internal state) |
+| 2 shuffle control | `av_fve_shuffled` ≤ ~0 and well below `av_fve` |
+| 5 diverse explanations | `unique_frac` > 0.9 |
 
----
+Cosine similarity alone is not evidence: GPT-2 activations are anisotropic, so a constant vector already scores about 0.8.
 
-## Config Override for Layer Sweep
+## Layout
 
-The `TINYNLA_CONFIG` environment variable overrides the default config path. All training scripts read it automatically via `nla.utils.load_config()`. The layer sweep sets this variable per subprocess — do not set it manually unless you want to run a single stage against a specific layer config:
+```
+nla/            model_adapter, datagen, explainers, ar, av, rl, metrics, evaluate, runs, read, gui/
+training/       datagen, train_ar_sft, train_av_sft, train_rl, eval_nla
+configs/        gpt2_small.yaml, qwen05b.yaml   (base.yaml = legacy)
+tests/          unit tests (fast) + tests/test_e2e_smoke.py (-m slow)
+nla/legacy, training/legacy, docs/legacy_v3.md  the v3 trajectory pipeline
+```
+
+## Tests
 
 ```powershell
-$env:TINYNLA_CONFIG = "experiments/layer_sweep_20260514_001733/layer_5/config.yaml"
-python -m training.eval_functional
+.venv\Scripts\python -m pytest                   # fast unit tests
+.venv\Scripts\python -m pytest -m slow -s        # end-to-end smoke run on CPU
 ```
 
----
+## Hardware notes (GTX 1650 Ti, 4 GB)
 
-## GPU Notes
+GPT-2 small uses full fine-tuning in fp32 with AMP. RL fits the policy, a frozen fp16 reference and the AR in about 3.5 GB.
 
-GTX 1650 Ti (4GB VRAM) is sufficient for GPT-2 with batch size 16 and `max_length=64`. AMP is enabled automatically on CUDA. Reduce `batch_size` to 8 if OOM occurs during training.
+Qwen 0.5B needs LoRA with an fp16 base, because Turing GPUs have no bf16.
 
-For the buffer build step, the target LM forward passes are `no_grad`; memory usage is dominated by the model size (~500MB for GPT-2).
-
----
-
-## Gitignore
-
-Large files are excluded. Do not commit:
-
-```
-datasets/
-checkpoints/
-experiments/
-wandb/
-*.pt
-*.pth
-.env
-```
+Datagen is dominated by the local explainer (about 0.65 s per sample), so 20k samples take about 3.5 hours. The cache is append-only JSONL, so interrupted runs resume where they stopped.

@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Thought Reader</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Thought Reader</h1>
+      <span class="sub">TinyNLA · natural language autoencoder</span>
+    </div>
+    <div id="run" class="run">loading run…</div>
+    <span class="sub"><a href="/report">plain-language report →</a> · <a href="/dashboard">training dashboard →</a></span>
+  </header>
+
+  <main>
+    <section class="input card">
+      <label for="text">Text to read</label>
+      <textarea id="text" rows="3" spellcheck="false">The old lighthouse keeper climbed the stairs every night to light the lamp, because he knew that somewhere out on the dark water a ship was</textarea>
+      <div class="row">
+        <button id="analyze" class="primary">Tokenize</button>
+        <label class="inline">samples
+          <select id="samples"><option>1</option><option selected>3</option><option>5</option></select>
+        </label>
+        <label class="inline">colour by
+          <select id="colorBy"><option value="norm">activation norm</option><option value="fve">self-check FVE</option></select>
+        </label>
+        <span class="hint">click a token · ← → to move · Enter to read</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <div id="tokens" class="tokens" aria-label="tokens"></div>
+      <div id="legend" class="legend"></div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <div class="panel-head">
+          <h2>Explanations</h2>
+          <div id="selected" class="selected">no token selected</div>
+        </div>
+        <div id="explanations" class="explanations">
+          <p class="empty">Select a token and press <b>Read</b>. Each explanation is written by the
+            verbalizer from the activation alone, then checked by the reconstructor.</p>
+        </div>
+        <button id="read" class="primary" disabled>Read token</button>
+      </section>
+
+      <section class="card">
+        <h2>Is it real? <span class="muted">touchstone controls for this token</span></h2>
+        <div id="controls" class="chart"></div>
+        <p class="note">FVE 0 = no better than the average activation. A trustworthy explanation beats
+          <b>shuffled</b> (other texts' explanations) by a wide margin.</p>
+        <h2>Verbalizer ↔ reconstructor <span class="muted">click an explanation</span></h2>
+        <div id="compare" class="chart"></div>
+      </section>
+    </div>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

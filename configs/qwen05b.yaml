@@ -1,0 +1,169 @@
+# ==========================================================
+
+# TinyNLA v4 — NLA for Qwen2.5-0.5B-Instruct (milestone 7)
+
+# ==========================================================
+
+# Same pipeline as gpt2_small.yaml, with LoRA on AV and AR so it fits 4 GB.
+
+# Layer 16 of 24 (~2/3 depth). The explainer is the same Qwen model
+
+# summarising its own contexts; swap explainer.kind to "claude" when available.
+
+# Run the GPT-2 pipeline end to end before this one.
+
+# ==========================================================
+
+experiment:
+
+  name: qwen05b_L16
+
+  seed: 42
+
+model:
+
+  target_name: Qwen/Qwen2.5-0.5B-Instruct
+
+  layer: 16
+
+data:
+
+  source: HuggingFaceFW/fineweb-edu
+
+  source_config: sample-10BT
+
+  streaming: true
+
+  num_samples: 20000
+
+  max_context_tokens: 96
+
+  min_position: 10
+
+  output_dir: data/qwen05b_L16
+
+  extract_batch_size: 8
+
+explainer:
+
+  kind: local_hf
+
+  model_name: Qwen/Qwen2.5-0.5B-Instruct
+
+  max_new_tokens: 64
+
+  batch_size: 64
+
+  cache_path: data/explainer_cache.jsonl
+
+templates:
+
+  av_prompt: 'Explain: <concept><|inject|></concept>
+
+
+
+    '
+
+  av_response_open: <explanation>
+
+  av_response_close: </explanation>
+
+  ar_prompt: <text>{explanation}</text> <summary>
+
+nla:
+
+  mse_scale: sqrt_d_model
+
+  injection_scale: null
+
+ar_sft:
+
+  epochs: 3
+
+  batch_size: 16
+
+  lr: 0.0002
+
+  head_lr: 0.001
+
+  max_explanation_tokens: 80
+
+  save_dir: checkpoints/qwen05b_L16/ar_sft
+
+av_sft:
+
+  epochs: 2
+
+  batch_size: 2           # 2 x 8 = effective 16; batch 4 peaked at 4.1 GiB reserved on the 4 GB card
+
+  grad_accum: 8
+
+  lr: 0.0002
+
+  max_explanation_tokens: 64
+
+  eval_samples: 200
+
+  save_dir: checkpoints/qwen05b_L16/av_sft
+
+rl:
+
+  steps: 1500
+
+  batch_size: 2
+
+  group_size: 4
+
+  max_new_tokens: 64
+
+  temperature: 1.0
+
+  kl_beta: 0.01
+
+  lr: 2.0e-05
+
+  ar_lr: 2.0e-05
+
+  log_reward: false
+  micro_batch: 4          # one GRPO group per chunk: the 152k-word vocabulary makes log-probs the memory peak
+
+  eval_every: 250
+
+  eval_samples: 200
+
+  save_dir: checkpoints/qwen05b_L16/rl
+
+eval:
+
+  n_samples: 1
+
+  max_test: 500
+
+lora:
+
+  r: 16
+
+  lora_alpha: 32
+
+  lora_dropout: 0.0
+
+  target_modules:
+
+  - q_proj
+
+  - k_proj
+
+  - v_proj
+
+  - o_proj
+
+  - gate_proj
+
+  - up_proj
+
+  - down_proj
+
+base_dtype: float16
+
+device: auto
+

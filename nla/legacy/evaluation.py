@@ -30,7 +30,7 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from nla.patching import (
+from nla.legacy.patching import (
     InterpolationPatcher,
     SequenceInterpolationPatcher,
 )

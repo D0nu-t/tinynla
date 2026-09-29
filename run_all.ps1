@@ -98,7 +98,7 @@ if ($Sweep) {
 
     Run-Step `
         "[Sweep] Multi-layer experiment orchestration" `
-        "python -m training.layer_sweep"
+        "python -m training.legacy.layer_sweep"
 
     Print-Header "Layer Sweep Completed"
 
@@ -111,7 +111,7 @@ if ($Sweep) {
 
 Run-Step `
     "[1/5] Building activation buffer" `
-    "python -m training.build_buffer"
+    "python -m training.legacy.build_buffer"
 
 # ==========================================================
 # STEP 2 — TRAIN AR
@@ -119,7 +119,7 @@ Run-Step `
 
 Run-Step `
     "[2/5] Training activation reconstructor" `
-    "python -m training.train_ar"
+    "python -m training.legacy.train_ar"
 
 # ==========================================================
 # STEP 3 — GEOMETRIC RECONSTRUCTION EVAL
@@ -127,7 +127,7 @@ Run-Step `
 
 Run-Step `
     "[3/5] Evaluating reconstruction quality" `
-    "python -m training.eval_patch"
+    "python -m training.legacy.eval_patch"
 
 # ==========================================================
 # STEP 3.5 — MANIFOLD FIDELITY EVAL
@@ -135,7 +135,7 @@ Run-Step `
 
 Run-Step `
     "[4/5] Evaluating manifold fidelity" `
-    "python -m training.eval_manifold"
+    "python -m training.legacy.eval_manifold"
 
 # ==========================================================
 # STEP 4 — FUNCTIONAL EVAL
@@ -143,7 +143,7 @@ Run-Step `
 
 Run-Step `
     "[5/5] Running functional activation evaluation" `
-    "python -m training.eval_functional"
+    "python -m training.legacy.eval_functional"
 
 # ==========================================================
 # Final Summary

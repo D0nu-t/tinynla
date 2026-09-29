@@ -1,0 +1,1 @@
+"""TinyNLA thought-reader GUI."""

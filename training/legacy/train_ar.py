@@ -42,11 +42,11 @@ from nla.dataset import (
     load_or_create_split,
     sequence_collate,
 )
-from nla.losses import (
+from nla.legacy.losses import (
     masked_sequence_cosine_loss,
     masked_combined_sequence_loss,
 )
-from nla.reconstructor import TokenLevelReconstructor
+from nla.legacy.reconstructor import TokenLevelReconstructor
 from nla.tracking import WandbTracker
 from nla.utils import (
     load_config,

@@ -1,0 +1,87 @@
+# ==========================================================
+# TinyNLA v4 — Natural Language Autoencoder for GPT-2 small
+# ==========================================================
+# Follows Fraser-Taliente et al. 2026 (transformer-circuits.pub/2026/nla)
+# and github.com/kitft/natural_language_autoencoders, scaled to a 4 GB GPU.
+#
+# Pipeline:  datagen -> AR SFT -> AV SFT -> GRPO RL -> eval / read / GUI
+# The v3 trajectory pipeline lives in training/legacy with configs/base.yaml.
+# ==========================================================
+
+experiment:
+  name: "gpt2_small_L8"
+  seed: 42
+
+model:
+  target_name: "gpt2"
+  layer: 8                 # block index read (≈ 2/3 depth, like the released NLAs)
+
+data:
+  source: "HuggingFaceFW/fineweb-edu"   # pretraining-like text, as in the paper
+  source_config: "sample-10BT"
+  streaming: true
+  num_samples: 20000
+  max_context_tokens: 96   # snippet length before random truncation
+  min_position: 10         # early positions decode to the prior; skip them
+  output_dir: "data/gpt2_small_L8"
+  extract_batch_size: 16
+
+explainer:
+  kind: "local_hf"         # local_hf | claude | rule (tests only)
+  model_name: "Qwen/Qwen2.5-0.5B-Instruct"
+  max_new_tokens: 64
+  batch_size: 64
+  cache_path: "data/explainer_cache.jsonl"
+
+templates:
+  # AV: activation injected at <|inject|>; response is "<explanation>...</explanation>"
+  av_prompt: "Explain: <concept><|inject|></concept>\n"
+  av_response_open: "<explanation>"
+  av_response_close: "</explanation>"
+  # AR: reads the explanation, readout at the final token
+  ar_prompt: "<text>{explanation}</text> <summary>"
+
+nla:
+  mse_scale: "sqrt_d_model"      # direction-only loss and FVE
+  injection_scale: null          # set by nla.av.choose_injection_scale
+
+ar_sft:
+  epochs: 3
+  batch_size: 16
+  lr: 0.00005
+  head_lr: 0.001
+  max_explanation_tokens: 80
+  save_dir: "checkpoints/gpt2_small_L8/ar_sft"
+
+av_sft:
+  epochs: 2
+  batch_size: 8
+  grad_accum: 2
+  lr: 0.00005
+  max_explanation_tokens: 64
+  eval_samples: 200          # val activations decoded + scored by the AR each epoch
+  save_dir: "checkpoints/gpt2_small_L8/av_sft"
+
+rl:
+  steps: 1500
+  batch_size: 4              # activations per step; x group_size rollouts
+  group_size: 4
+  max_new_tokens: 64
+  temperature: 1.0
+  kl_beta: 0.01
+  lr: 0.000005
+  ar_lr: 0.00002
+  log_reward: false
+  eval_every: 250
+  eval_samples: 200
+  save_dir: "checkpoints/gpt2_small_L8/rl"
+
+eval:
+  n_samples: 1               # AV samples per test activation
+  max_test: 500
+
+# LoRA (null = full fine-tuning). The Qwen config sets this.
+lora: null
+base_dtype: "float32"
+
+device: "auto"

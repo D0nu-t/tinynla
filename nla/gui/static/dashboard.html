@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Training Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <h1>Training Dashboard</h1>
+      <span class="sub">TinyNLA · live from logs, no GPU use</span>
+    </div>
+    <div id="run" class="run">loading…</div>
+  </header>
+
+  <main>
+    <section class="card">
+      <div id="stages" class="stages"></div>
+      <div id="progress" class="progress"></div>
+    </section>
+
+    <div class="grid3">
+      <section class="card"><h2>GPU</h2><div id="gpu"></div></section>
+      <section class="card span2"><h2>Is it reading thoughts yet? <span class="muted">validation FVE during RL</span></h2>
+        <div id="rlval" class="chart"></div>
+        <p class="note">RL's goal: the <b>verbalizer's explanations</b> (solid) rise above the <b>input summaries</b> (dashed)
+          and stay well above <b>shuffled</b>. Both are scored by the same, current reconstructor.</p>
+      </section>
+    </div>
+
+    <div class="grid2">
+      <section class="card"><h2>RL reward <span class="muted">−normalized MSE per rollout (live)</span></h2><div id="reward" class="chart"></div></section>
+      <section class="card"><h2>RL KL &amp; parse rate <span class="muted">drift from the SFT policy</span></h2><div id="kl" class="chart"></div></section>
+      <section class="card"><h2>Reconstructor SFT <span class="muted">loss and per-epoch validation</span></h2><div id="arloss" class="chart"></div><div id="arval" class="chart"></div></section>
+      <section class="card"><h2>Verbalizer SFT <span class="muted">loss and validation</span></h2><div id="avloss" class="chart"></div><div id="avval" class="chart"></div></section>
+    </div>
+
+    <div class="grid2">
+      <section class="card"><h2>Final evaluation</h2><div id="final"><p class="empty">Appears when <code>eval_nla</code> finishes.</p></div></section>
+      <section class="card"><h2>Log messages <span class="muted">latest</span></h2><pre id="messages" class="messages"></pre></section>
+    </div>
+  </main>
+
+  <script src="/static/dashboard.js"></script>
+</body>
+</html>

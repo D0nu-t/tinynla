@@ -240,19 +240,19 @@ def main():
         steps = [
             (
                 "build_buffer",
-                "python -m training.build_buffer",
+                "python -m training.legacy.build_buffer",
             ),
             (
                 "train_ar",
-                "python -m training.train_ar",
+                "python -m training.legacy.train_ar",
             ),
             (
                 "eval_patch",
-                "python -m training.eval_patch",
+                "python -m training.legacy.eval_patch",
             ),
             (
                 "eval_functional",
-                "python -m training.eval_functional",
+                "python -m training.legacy.eval_functional",
             ),
         ]
 

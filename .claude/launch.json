@@ -1,0 +1,81 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "gui-smoke",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "nla.gui",
+        "--no-browser",
+        "--port",
+        "8765",
+        "--set",
+        "device=cpu",
+        "--set",
+        "data.output_dir=data/e2e_smoke",
+        "--set",
+        "av_sft.save_dir=checkpoints/e2e_smoke/av_sft",
+        "--set",
+        "ar_sft.save_dir=checkpoints/e2e_smoke/ar_sft",
+        "--set",
+        "rl.save_dir=checkpoints/e2e_smoke/rl"
+      ],
+      "port": 8765
+    },
+    {
+      "name": "dashboard",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "nla.gui.dashboard",
+        "--no-browser",
+        "--port",
+        "8001"
+      ],
+      "port": 8001
+    },
+    {
+      "name": "dashboard-rl2",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "nla.gui.dashboard",
+        "--no-browser",
+        "--port",
+        "8002",
+        "--log",
+        "logs/pipeline_rl2.log",
+        "--set",
+        "rl.save_dir=checkpoints/gpt2_small_L8/rl2"
+      ],
+      "port": 8002
+    },
+    {
+      "name": "gui",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "nla.gui",
+        "--no-browser",
+        "--port",
+        "8000"
+      ],
+      "port": 8000
+    },
+    {
+      "name": "gui-rl2",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "nla.gui",
+        "--no-browser",
+        "--port",
+        "8003",
+        "--set",
+        "rl.save_dir=checkpoints/gpt2_small_L8/rl2"
+      ],
+      "port": 8003
+    }
+  ]
+}
