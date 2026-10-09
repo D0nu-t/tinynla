@@ -41,3 +41,6 @@ Thumbs.db
 .env
 # NLA v4 data
 data/
+
+# graphify (rebuilt locally with `graphify update .`)
+graphify-out/
